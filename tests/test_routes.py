@@ -28,7 +28,7 @@ import pytest
 from PIL import Image
 from werkzeug.datastructures import FileStorage
 
-from tests.conftest import load_fixture
+from tests.conftest import FIXTURE_DIR, load_fixture
 
 
 # ---------------------------------------------------------------------------
@@ -247,24 +247,54 @@ class TestProcessBatchMocked:
 
 
 # ---------------------------------------------------------------------------
-# Real fixture end-to-end tests (skipped if fixtures absent)
+# Real fixture end-to-end tests — auto-discovered
 # ---------------------------------------------------------------------------
+
+_FILENAME_TO_CATEGORY = {
+    "monday":    "monday",
+    "tuesday":   "tuesday",
+    "wednesday": "wednesday",
+    "thursday":  "thursday",
+    "friday":    "friday",
+    "saturday":  "saturday",
+    "weekly":    "weekly",
+    "power":     "power",
+    "strength":  "power",
+}
+
+
+def _infer_category(fixture_name: str):
+    lower = fixture_name.lower()
+    for keyword, category in _FILENAME_TO_CATEGORY.items():
+        if keyword in lower:
+            return category
+    return None
+
+
+def _discovered_fixtures():
+    stems = sorted(p.stem for p in FIXTURE_DIR.glob("*.json"))
+    return stems if stems else ["__no_fixtures__"]
+
 
 class TestProcessBatchRealFixtures:
     """
-    Full pipeline tests using real Vision API fixture data.
-    Run tools/capture_ocr_fixture.py first to generate fixtures.
+    Full HTTP pipeline tests using real Vision API fixture data.
+    Auto-discovers all fixtures from tests/fixtures/ocr_responses/.
+    Expected category is inferred from the fixture filename.
     """
 
-    @pytest.mark.parametrize("fixture_name,expected_category", [
-        ("8851", "weekly"),
-        ("8836", "friday"),
-        ("8725", "power"),
-    ])
+    @pytest.mark.parametrize("fixture_name", _discovered_fixtures())
     def test_full_pipeline_with_real_fixture(
-        self, fixture_name, expected_category, client, skip_if_no_fixture
+        self, fixture_name, client, skip_if_no_fixture
     ):
         skip_if_no_fixture(fixture_name)
+
+        expected_category = _infer_category(fixture_name)
+        if expected_category is None:
+            pytest.skip(
+                f"Cannot infer expected category from fixture name '{fixture_name}'. "
+                f"Rename the screenshot to include a day or screen type."
+            )
 
         fixture_data = load_fixture(fixture_name)
         text_blocks  = fixture_data["text_blocks"]
@@ -283,6 +313,7 @@ class TestProcessBatchRealFixtures:
         assert response.status_code == 200
         data = response.get_json()
         assert expected_category in data, (
-            f"Expected category '{expected_category}' in response keys {list(data.keys())}"
+            f"Fixture '{fixture_name}': expected category '{expected_category}' "
+            f"in response keys {list(data.keys())}"
         )
         assert len(data[expected_category]) > 0
