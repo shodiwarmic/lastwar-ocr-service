@@ -221,7 +221,7 @@ class TestProcessBatchMocked:
                 return ("friday", 0.95)
             return ("power", 0.92)
 
-        def extract_side_effect(blocks, screen_type, image_height=2400):
+        def extract_side_effect(blocks, screen_type, image_height=2400, image_width=1080):
             if screen_type == "friday":
                 return [PlayerEntry(player_name="SirBucksALot", score=45_635_206)]
             return [PlayerEntry(player_name="MOJO DUDE", score=218_478_394)]

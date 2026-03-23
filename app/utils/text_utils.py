@@ -69,13 +69,16 @@ _ALLIANCE_SUFFIX_RES = [
 ]
 
 # Bare alliance tag abbreviations — the bracketed form [PoWr] is handled by
-# _ALLIANCE_TAG_RE, but OCR sometimes returns the content without brackets
-# as a standalone uppercase token. Strip these when they appear as whole words.
-# Add new entries as bare uppercase abbreviations are encountered in logs.
-_BARE_TAG_RE = re.compile(
-    r'(?:PoWr|POWR|Powr)',
-    re.IGNORECASE,
-)
+# _ALLIANCE_TAG_RE, but OCR sometimes drops the brackets leaving the
+# abbreviation as a standalone token. We detect alliance abbreviations
+# generically by pattern: short tokens (2-6 chars) with internal uppercase
+# (e.g. PoWr, CoRe, TaGs) rather than hardcoding specific alliance names.
+def _looks_like_tag(token: str) -> bool:
+    """Returns True if a token matches the alliance abbreviation pattern."""
+    if not 2 <= len(token) <= 6:
+        return False
+    # Must have at least one uppercase letter after position 0
+    return any(c.isupper() for c in token[1:])
 
 
 # Day tab label to output key mapping
@@ -220,20 +223,28 @@ def strip_bare_tags(name: str) -> str:
     """
     Removes bare alliance tag abbreviations that appear without brackets.
 
-    OCR sometimes returns [PoWr] split into tokens, losing the brackets,
-    leaving the abbreviation "PoWr" as a standalone word in the name string.
-    _ALLIANCE_TAG_RE handles the bracketed form; this handles the bare form.
+    OCR sometimes returns [PoWr] with the brackets dropped, leaving the
+    abbreviation as a standalone word. Rather than hardcoding specific
+    alliance names, we detect the pattern generically: a short token
+    (2-6 chars) with internal uppercase letters (e.g. PoWr, CoRe, TaGs).
+
+    This is applied after strip_alliance_tag so only unbracketed survivors
+    reach this step.
 
     Args:
         name: Player name string potentially containing a bare tag abbreviation.
 
     Returns:
-        Name with bare tag abbreviations removed.
+        Name with detected alliance abbreviation tokens removed.
 
-    Example:
-        strip_bare_tags("PoWr SirBucksALot") → "SirBucksALot"
+    Examples:
+        strip_bare_tags("PoWr SirBucksALot")  → "SirBucksALot"
+        strip_bare_tags("CoRe PlayerName")     → "PlayerName"
+        strip_bare_tags("SirBucksALot")        → "SirBucksALot"  (unchanged)
     """
-    return _BARE_TAG_RE.sub("", name).strip()
+    tokens = name.split()
+    cleaned = [t for t in tokens if not _looks_like_tag(t)]
+    return " ".join(cleaned).strip()
 
 
 def strip_alliance_suffixes(name: str) -> str:
