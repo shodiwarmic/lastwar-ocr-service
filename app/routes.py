@@ -118,7 +118,7 @@ def process_batch():
         filename = file_storage.filename or "unknown"
         pil_image = pil_from_file_storage(file_storage)
         if pil_image is None:
-            logger.warning("Skipping unreadable image", extra={"filename": filename})
+            logger.warning("Skipping unreadable image", extra={"image_filename": filename})
             continue
 
         img_bytes = pil_to_bytes(pil_image)
@@ -152,7 +152,7 @@ def process_batch():
             fallback_images.append((pil_image, filename, img_hash))
             logger.debug(
                 "Image queued for OCR fallback",
-                extra={"filename": filename, "pass1_result": category, "confidence": confidence},
+                extra={"image_filename": filename, "pass1_result": category, "confidence": confidence},
             )
 
     # ------------------------------------------------------------------ #
@@ -176,7 +176,7 @@ def process_batch():
 
         # Check cache first
         if img_hash in _result_cache:
-            logger.info("Cache hit for fallback image", extra={"filename": filename})
+            logger.info("Cache hit for fallback image", extra={"image_filename": filename})
             # We don't know the category from cache alone — re-classify from
             # cached text blocks if available, else re-run OCR
             # For simplicity: cache miss on fallbacks, just re-run
@@ -210,7 +210,7 @@ def process_batch():
         if category is None:
             logger.error(
                 "Classification failed after OCR fallback — image skipped",
-                extra={"filename": filename},
+                extra={"image_filename": filename},
             )
             continue
 

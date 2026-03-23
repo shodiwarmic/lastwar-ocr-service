@@ -91,7 +91,7 @@ def group_images_by_category_and_resolution(
         if category is None:
             logger.warning(
                 "Skipping image with no category",
-                extra={"filename": filename},
+                extra={"image_filename": filename},
             )
             continue
 
@@ -145,7 +145,7 @@ def stitch_images_vertically(
     if len(image_list) == 1:
         logger.debug(
             "Single image — no stitching required",
-            extra={"filename": image_list[0][1], "category": category},
+            extra={"image_filename": image_list[0][1], "category": category},
         )
         return image_list[0][0]
 
@@ -177,7 +177,7 @@ def stitch_images_vertically(
         logger.debug(
             "Cropped image for stitching",
             extra={
-                "filename": filename,
+                "image_filename": filename,
                 "position": "first" if is_first else "last" if is_last else "middle",
                 "original_size": f"{img.width}x{img.height}",
                 "cropped_size": f"{cropped_images[-1].width}x{cropped_images[-1].height}",
