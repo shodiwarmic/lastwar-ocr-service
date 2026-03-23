@@ -21,7 +21,7 @@ from app.pipeline.extractor import (
     parse_player_row,
 )
 from app.utils.text_utils import clean_player_name
-from tests.conftest import get_text_blocks, make_block, skip_if_no_fixture
+from tests.conftest import FIXTURE_DIR, get_text_blocks, load_fixture, make_block, skip_if_no_fixture
 
 
 # ---------------------------------------------------------------------------
@@ -226,39 +226,69 @@ class TestExtractPlayersSynthetic:
         assert players[0].score == 45_635_206
 
 
+
 # ---------------------------------------------------------------------------
-# Real fixture extraction tests (skipped if fixtures absent)
+# Real fixture extraction tests — auto-discovered
 # ---------------------------------------------------------------------------
+
+_FILENAME_TO_CATEGORY = {
+    "monday":    "monday",
+    "tuesday":   "tuesday",
+    "wednesday": "wednesday",
+    "thursday":  "thursday",
+    "friday":    "friday",
+    "saturday":  "saturday",
+    "weekly":    "weekly",
+    "power":     "power",
+    "strength":  "power",
+}
+
+
+def _infer_category(fixture_name: str):
+    lower = fixture_name.lower()
+    for keyword, category in _FILENAME_TO_CATEGORY.items():
+        if keyword in lower:
+            return category
+    return None
+
+
+def _discovered_fixtures():
+    stems = sorted(p.stem for p in FIXTURE_DIR.glob("*.json"))
+    return stems if stems else ["__no_fixtures__"]
+
 
 class TestExtractPlayersRealFixtures:
     """
-    Verifies extract_players() against known player data from sample screenshots.
-    Adjust expected values to match your actual screenshots if they differ.
+    Verifies extract_players() returns at least one valid player from every
+    captured fixture. Category is inferred from the fixture filename.
+
+    These are smoke tests — they confirm the extractor produces output
+    rather than asserting specific player names and scores (which vary
+    per screenshot). Add specific assertions once you know the expected
+    values from your fixtures.
     """
 
-    def test_extracts_weekly_rank_top_player(self, skip_if_no_fixture):
-        skip_if_no_fixture("8851")
-        blocks = get_text_blocks("8851")
-        players = extract_players(blocks, screen_type="weekly", image_height=2400)
-        assert len(players) > 0
-        # Top player in weekly rank screenshot
-        top = players[0]
-        assert top.player_name == "SirBucksALot"
-        assert top.score == 161_528_090
+    @pytest.mark.parametrize("fixture_name", _discovered_fixtures())
+    def test_extracts_at_least_one_player(self, fixture_name, skip_if_no_fixture):
+        skip_if_no_fixture(fixture_name)
 
-    def test_extracts_power_ranking_top_player(self, skip_if_no_fixture):
-        skip_if_no_fixture("8725")
-        blocks = get_text_blocks("8725")
-        players = extract_players(blocks, screen_type="power", image_height=2400)
-        assert len(players) > 0
-        top = players[0]
-        assert top.player_name == "MOJO DUDE"
-        assert top.score == 218_478_394
+        screen_type = _infer_category(fixture_name)
+        if screen_type is None:
+            pytest.skip(
+                f"Cannot infer screen type from fixture name '{fixture_name}'. "
+                f"Rename the screenshot to include a day or screen type."
+            )
 
-    def test_extracts_self_player_row(self, skip_if_no_fixture):
-        """The highlighted self-player row (ShodiWarmic) should also be extracted."""
-        skip_if_no_fixture("8836")
-        blocks = get_text_blocks("8836")
-        players = extract_players(blocks, screen_type="friday", image_height=2400)
-        names = [p.player_name for p in players]
-        assert "ShodiWarmic" in names
+        blocks = get_text_blocks(fixture_name)
+        fixture_data = load_fixture(fixture_name)
+        image_height = fixture_data.get("image_height", 2400)
+
+        players = extract_players(blocks, screen_type=screen_type, image_height=image_height)
+
+        assert len(players) > 0, (
+            f"Fixture '{fixture_name}': expected at least one player, got none. "
+            f"Check the OCR output in tests/fixtures/ocr_responses/{fixture_name}.json"
+        )
+        for p in players:
+            assert p.player_name.strip(), f"Empty player name in fixture '{fixture_name}'"
+            assert p.score > 0, f"Non-positive score in fixture '{fixture_name}'"

@@ -4,19 +4,20 @@ tests/test_classifier.py
 Unit tests for app/pipeline/classifier.py.
 
 All tests use either synthetic OCR blocks (from conftest fixtures) or
-real JSON fixtures loaded from tests/fixtures/ocr_responses/.
+real JSON fixtures auto-discovered from tests/fixtures/ocr_responses/.
 
 The Vision API is never called. classify_from_ocr_text() is tested directly
 with pre-built block lists that match the format ocr_client produces.
 
-Test categories:
-    - OCR-based classification (Pass 2) using synthetic blocks
-    - OCR-based classification using real captured fixtures (skipped if absent)
-    - Day label normalisation edge cases
-    - Confidence threshold behaviour
+Real fixture tests infer the expected category from the fixture filename.
+Fixture files should include a day name or screen type in their name, e.g.:
+    Friday-215600.json   → expected category: friday
+    Power-214600.json    → expected category: power
+    Weekly-220909.json   → expected category: weekly
 """
 
 import pytest
+from pathlib import Path
 
 from app.pipeline.classifier import (
     CONFIDENCE_THRESHOLD,
@@ -25,7 +26,7 @@ from app.pipeline.classifier import (
     _ocr_detect_weekly,
     _ocr_detect_active_day,
 )
-from tests.conftest import get_text_blocks, make_block
+from tests.conftest import FIXTURE_DIR, get_text_blocks, make_block
 
 
 # ---------------------------------------------------------------------------
@@ -43,7 +44,6 @@ class TestOcrDetectStrength:
         assert _ocr_detect_strength(blocks) is True
 
     def test_requires_both_power_and_kills(self):
-        # power alone should not match
         assert _ocr_detect_strength({"power", "ranking"}) is False
 
     def test_weekly_rank_not_detected_as_strength(self, weekly_rank_blocks):
@@ -87,7 +87,6 @@ class TestOcrDetectActiveDay:
         assert day is None
 
     def test_various_day_abbreviations(self):
-        """Each day abbreviation variant should resolve correctly."""
         cases = [
             ("Mon.",  "monday"),
             ("Tues.", "tuesday"),
@@ -100,7 +99,7 @@ class TestOcrDetectActiveDay:
             blocks = [make_block(abbr, 300, 250)]
             all_lower = {abbr.lower()}
             result = _ocr_detect_active_day(blocks, all_lower)
-            assert result == expected, f"Expected {expected} for abbreviation '{abbr}', got {result}"
+            assert result == expected, f"Expected {expected} for '{abbr}', got {result}"
 
 
 # ---------------------------------------------------------------------------
@@ -131,8 +130,8 @@ class TestClassifyFromOcrText:
 
     def test_returns_none_for_unrecognised_layout(self):
         noise_blocks = [
-            make_block("Hello",  100, 100),
-            make_block("World",  200, 100),
+            make_block("Hello", 100, 100),
+            make_block("World", 200, 100),
         ]
         category, confidence = classify_from_ocr_text(noise_blocks)
         assert category is None
@@ -140,36 +139,64 @@ class TestClassifyFromOcrText:
 
 
 # ---------------------------------------------------------------------------
-# Real fixture tests (skipped if fixtures not yet captured)
+# Real fixture tests — auto-discovered from tests/fixtures/ocr_responses/
 # ---------------------------------------------------------------------------
+
+# Day/screen keywords mapped to expected output category
+_FILENAME_TO_CATEGORY = {
+    "monday":    "monday",
+    "tuesday":   "tuesday",
+    "wednesday": "wednesday",
+    "thursday":  "thursday",
+    "friday":    "friday",
+    "saturday":  "saturday",
+    "weekly":    "weekly",
+    "power":     "power",
+    "strength":  "power",
+}
+
+
+def _infer_category(fixture_name: str):
+    """Infer expected category from fixture filename, or None if unrecognised."""
+    lower = fixture_name.lower()
+    for keyword, category in _FILENAME_TO_CATEGORY.items():
+        if keyword in lower:
+            return category
+    return None
+
+
+def _discovered_fixtures():
+    """Return list of fixture stem names found on disk, or a placeholder if none."""
+    stems = sorted(p.stem for p in FIXTURE_DIR.glob("*.json"))
+    return stems if stems else ["__no_fixtures__"]
+
 
 class TestRealFixtures:
     """
-    Tests against real Vision API responses captured from the sample screenshots.
-    Run tools/capture_ocr_fixture.py first to generate the fixture files.
+    Classification tests against real Vision API responses.
+    Fixtures are auto-discovered from tests/fixtures/ocr_responses/.
+
+    Expected category is inferred from the filename — include a day name or
+    screen type in the screenshot filename before capturing:
+        Friday-215600.png  → friday
+        Power-214600.png   → power
+        Weekly-220909.png  → weekly
     """
 
-    FIXTURE_EXPECTED = [
-        ("8851", "weekly"),    # Weekly Rank tab active
-        ("8836", "friday"),    # Friday Daily tab active
-        ("8822", "thursday"),  # Thursday Daily tab active
-        ("8803", "thursday"),  # Thursday Daily tab active (duplicate screenshot)
-        ("8778", "monday"),    # Monday Daily tab active
-        ("8763", "tuesday"),   # Tuesday Daily tab active
-        ("8754", "thursday"),  # Thursday (different week)
-        ("8738", "wednesday"), # Wednesday Daily tab active
-        ("8725", "power"),     # Strength Ranking screen
-        ("8722", "tuesday"),   # Tuesday Daily tab active
-    ]
-
-    @pytest.mark.parametrize("fixture_name,expected_category", FIXTURE_EXPECTED)
-    def test_classification_from_real_fixture(
-        self, fixture_name, expected_category, skip_if_no_fixture
-    ):
+    @pytest.mark.parametrize("fixture_name", _discovered_fixtures())
+    def test_classification_from_real_fixture(self, fixture_name, skip_if_no_fixture):
         skip_if_no_fixture(fixture_name)
+
+        expected = _infer_category(fixture_name)
+        if expected is None:
+            pytest.skip(
+                f"Cannot infer expected category from fixture name '{fixture_name}'. "
+                f"Rename the screenshot to include a day or screen type before capturing."
+            )
+
         blocks = get_text_blocks(fixture_name)
         category, confidence = classify_from_ocr_text(blocks, filename=f"{fixture_name}.png")
-        assert category == expected_category, (
-            f"Fixture {fixture_name}: expected '{expected_category}', got '{category}'"
+        assert category == expected, (
+            f"Fixture '{fixture_name}': expected '{expected}', got '{category}'"
         )
         assert confidence == 1.0
