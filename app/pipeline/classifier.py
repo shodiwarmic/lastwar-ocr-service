@@ -107,7 +107,7 @@ def classify_screenshot(
     if result:
         logger.debug(
             "Pass 1: Strength Ranking detected",
-            extra={"filename": filename, "confidence": confidence},
+            extra={"image_filename": filename, "confidence": confidence},
         )
         return "power", confidence
 
@@ -116,7 +116,7 @@ def classify_screenshot(
     if result:
         logger.debug(
             "Pass 1: Weekly Rank detected",
-            extra={"filename": filename, "confidence": confidence},
+            extra={"image_filename": filename, "confidence": confidence},
         )
         return "weekly", confidence
 
@@ -125,13 +125,13 @@ def classify_screenshot(
     if day:
         logger.debug(
             "Pass 1: Daily Rank detected",
-            extra={"filename": filename, "day": day, "confidence": confidence},
+            extra={"image_filename": filename, "day": day, "confidence": confidence},
         )
         return day, confidence
 
     logger.debug(
         "Pass 1: Classification ambiguous",
-        extra={"filename": filename, "confidence": 0.0},
+        extra={"image_filename": filename, "confidence": 0.0},
     )
     return None, 0.0
 
@@ -165,23 +165,23 @@ def classify_from_ocr_text(
 
     # Strength Ranking: unique header text present
     if _ocr_detect_strength(all_text_lower):
-        logger.debug("Pass 2: Strength Ranking detected via OCR", extra={"filename": filename})
+        logger.debug("Pass 2: Strength Ranking detected via OCR", extra={"image_filename": filename})
         return "power", 1.0
 
     # Weekly Rank: "weekly rank" text present and no active day tab
     if _ocr_detect_weekly(all_text_lower):
-        logger.debug("Pass 2: Weekly Rank detected via OCR", extra={"filename": filename})
+        logger.debug("Pass 2: Weekly Rank detected via OCR", extra={"image_filename": filename})
         return "weekly", 1.0
 
     # Daily Rank: find active day
     day = _ocr_detect_active_day(text_blocks, all_text_lower)
     if day:
-        logger.debug("Pass 2: Daily Rank detected via OCR", extra={"filename": filename, "day": day})
+        logger.debug("Pass 2: Daily Rank detected via OCR", extra={"image_filename": filename, "day": day})
         return day, 1.0
 
     logger.warning(
         "Pass 2: OCR classification failed — no definitive markers found",
-        extra={"filename": filename, "detected_tokens": list(all_text_lower)[:20]},
+        extra={"image_filename": filename, "detected_tokens": list(all_text_lower)[:20]},
     )
     return None, 0.0
 
@@ -266,28 +266,35 @@ def _ocr_detect_strength(all_text_lower: set[str]) -> bool:
 
 def _ocr_detect_weekly(all_text_lower: set[str]) -> bool:
     """
-    Returns True if Weekly Rank markers are present without an active day tab.
+    Returns True if Weekly Rank markers are present without active day tabs.
 
-    "Weekly Rank" text appears on both Weekly and Daily screens (as inactive
-    tab text), so we must confirm no day tab is the active one by checking
-    whether the "Daily Rank" tab text also appears. If both are present,
-    the screen is Daily (Daily Rank tab is the active one). If only "Weekly
-    Rank" appears with the typical column headers, it is the Weekly screen.
+    OCR returns individual words, so we check for "weekly" as a token rather
+    than "weekly rank" as a combined string. Both Weekly and Daily screens
+    show both tab labels, so the key discriminator is the absence of individual
+    day tab abbreviations (Mon./Tues./etc.) which only appear on Daily screens.
+
+    Decision logic:
+        - "weekly" present + no day tab abbreviations → Weekly Rank screen
+        - "weekly" present + day tab abbreviations present → Daily Rank screen
+        - "weekly" absent → not a Weekly Rank screen
     """
-    has_weekly = "weekly rank" in all_text_lower
-    has_daily  = "daily rank" in all_text_lower
+    has_weekly = "weekly" in all_text_lower
+    has_daily  = "daily" in all_text_lower
 
-    # On Daily screens both tabs are visible as text; on Weekly only weekly is primary
-    if has_weekly and not has_daily:
-        return True
-    # Both visible — check if any day tab column is present (indicates Daily screen)
-    if has_weekly and has_daily:
-        day_tabs_visible = any(
-            day_abbr in all_text_lower
-            for day_abbr in ["mon.", "tues.", "wed.", "thur.", "fri.", "sat."]
-        )
-        return not day_tabs_visible
-    return False
+    if not has_weekly:
+        return False
+
+    # Day tab abbreviations only appear on Daily screens
+    day_tabs_visible = any(
+        day_abbr in all_text_lower
+        for day_abbr in ["mon.", "tues.", "wed.", "thur.", "fri.", "sat."]
+    )
+
+    if day_tabs_visible:
+        return False
+
+    # Weekly present, no day tabs — this is the Weekly Rank screen
+    return True
 
 
 def _ocr_detect_active_day(
@@ -322,32 +329,27 @@ def _ocr_detect_active_day(
         if canonical is None:
             continue
 
-        # Get average Y position from bounding box vertices
-        bbox = block.get("bbox")
-        if bbox is None:
-            continue
-
-        avg_y = _avg_y_from_bbox(bbox)
+        # Use avg_y directly from the block dict (already computed by ocr_client)
+        # Fall back to bbox computation if avg_y not present
+        avg_y = block.get("avg_y") or _avg_y_from_bbox(block.get("bbox", {}))
         day_candidates.append((canonical, avg_y))
 
     if not day_candidates:
         return None
 
-    # The active tab is in the tab bar — sort by Y ascending and take the topmost
-    # group (all within 20px of each other are in the same bar row)
+    # The active tab sits slightly higher (lower Y value) than inactive tabs
+    # because the UI renders it as visually elevated. Sort ascending by Y and
+    # return the day with the lowest Y — that is the active (elevated) tab.
     day_candidates.sort(key=lambda x: x[1])
-    topmost_y = day_candidates[0][1]
 
-    tab_bar_candidates = [d for d, y in day_candidates if abs(y - topmost_y) < 20]
+    # If all tabs are at essentially the same Y (within 5px) we cannot distinguish
+    # them spatially — return None to avoid a wrong guess
+    if len(day_candidates) > 1:
+        y_spread = day_candidates[-1][1] - day_candidates[0][1]
+        if y_spread < 5:
+            return None
 
-    # If there's only one day in the tab bar area it must be the active tab label
-    # (inactive tabs are also present but at the same Y — we need another signal)
-    # Return the last one found if multiple — on Daily screens the active day
-    # is typically rendered in a bolder/larger font and OCR picks it up more clearly
-    if tab_bar_candidates:
-        return tab_bar_candidates[-1]
-
-    return None
+    return day_candidates[0][0]
 
 
 def _avg_y_from_bbox(bbox) -> float:
