@@ -196,7 +196,7 @@ def process_batch():
             continue
 
         text_blocks = extract_text_blocks(annotation)
-        category, confidence = classify_from_ocr_text(text_blocks, filename=filename)
+        category, confidence = classify_from_ocr_text(text_blocks, image=pil_image, filename=filename)
 
         log_classification_event(
             logger, filename,

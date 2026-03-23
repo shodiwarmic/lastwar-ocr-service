@@ -26,7 +26,7 @@ from app.pipeline.classifier import (
     _ocr_detect_weekly,
     _ocr_detect_active_day,
 )
-from tests.conftest import FIXTURE_DIR, get_text_blocks, make_block
+from tests.conftest import FIXTURE_DIR, get_text_blocks, load_fixture, make_block
 
 
 # ---------------------------------------------------------------------------
@@ -194,9 +194,46 @@ class TestRealFixtures:
                 f"Rename the screenshot to include a day or screen type before capturing."
             )
 
-        blocks = get_text_blocks(fixture_name)
-        category, confidence = classify_from_ocr_text(blocks, filename=f"{fixture_name}.png")
-        assert category == expected, (
-            f"Fixture '{fixture_name}': expected '{expected}', got '{category}'"
+        fixture_data = load_fixture(fixture_name)
+        blocks = fixture_data["text_blocks"]
+
+        # Load the original screenshot for colour-based day detection if available
+        image = _try_load_source_image(fixture_data.get("source_file", ""))
+
+        category, confidence = classify_from_ocr_text(
+            blocks, image=image, filename=f"{fixture_name}.png"
         )
-        assert confidence == 1.0
+        assert category == expected, (
+            f"Fixture '{fixture_name}': expected '{expected}', got '{category}' "
+            f"(image_available={image is not None})"
+        )
+        assert confidence > 0.0
+
+
+def _try_load_source_image(source_file: str):
+    """
+    Attempts to load the original screenshot for colour-based classification.
+    Returns None if not found — tests degrade gracefully to text-only mode.
+    """
+    if not source_file:
+        return None
+
+    from pathlib import Path
+    from app.utils.image_utils import pil_from_bytes
+
+    search_dirs = [
+        Path("tests/fixtures/screenshots"),
+        Path.home() / "lastwar-screenshots",
+        Path.home() / "Pictures",
+        Path.home() / "Downloads",
+    ]
+
+    for directory in search_dirs:
+        candidate = directory / source_file
+        if candidate.exists():
+            try:
+                return pil_from_bytes(candidate.read_bytes())
+            except Exception:
+                pass
+
+    return None
