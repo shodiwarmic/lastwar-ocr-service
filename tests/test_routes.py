@@ -26,6 +26,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from PIL import Image
+from werkzeug.datastructures import FileStorage
 
 from tests.conftest import load_fixture
 
@@ -42,16 +43,25 @@ def make_png_bytes(width: int = 1080, height: int = 2400) -> bytes:
     return buf.getvalue()
 
 
-def png_file_tuple(filename: str = "test.png", **kwargs):
-    """Returns a (filename, bytes, mimetype) tuple for Flask test client uploads."""
-    return (filename, io.BytesIO(make_png_bytes(**kwargs)), "image/png")
+def png_file_storage(filename: str = "test.png", **kwargs) -> FileStorage:
+    """
+    Returns a Werkzeug FileStorage object for Flask test client multipart uploads.
+
+    Flask's test client accepts FileStorage objects directly in the data dict,
+    which avoids Werkzeug trying to interpret a filename string as a file path
+    to open on disk.
+    """
+    return FileStorage(
+        stream=io.BytesIO(make_png_bytes(**kwargs)),
+        filename=filename,
+        content_type="image/png",
+    )
 
 
 def fixture_annotation(fixture_name: str):
     """
     Loads a real OCR fixture and returns a mock annotation object whose
     extract_text_blocks() output matches the fixture's text_blocks.
-    This lets route tests use real OCR data without calling the API.
     """
     try:
         data = load_fixture(fixture_name)
@@ -97,19 +107,22 @@ class TestProcessBatchValidation:
         assert response.status_code == 400
 
     def test_non_image_file_is_skipped_gracefully(self, client):
-        """A text file uploaded as 'images' should be skipped, not crash."""
-        with patch("app.routes.run_ocr") as mock_ocr:
-            mock_ocr.return_value = (None, "hash123")
-            response = client.post(
-                "/process-batch",
-                content_type="multipart/form-data",
-                data={"images": (io.BytesIO(b"not an image"), "bad.txt", "text/plain")},
-            )
-        # Should return 400 since no valid images were loaded
+        """A text file uploaded as 'images' should be skipped, returning 400
+        since no valid images remain after filtering."""
+        bad_file = FileStorage(
+            stream=io.BytesIO(b"not an image"),
+            filename="bad.txt",
+            content_type="text/plain",
+        )
+        response = client.post(
+            "/process-batch",
+            content_type="multipart/form-data",
+            data={"images": bad_file},
+        )
         assert response.status_code == 400
 
     def test_too_many_images_returns_400(self, client):
-        files = [png_file_tuple(f"img{i}.png") for i in range(25)]
+        files = [png_file_storage(f"img{i}.png") for i in range(25)]
         response = client.post(
             "/process-batch",
             content_type="multipart/form-data",
@@ -124,20 +137,6 @@ class TestProcessBatchValidation:
 # ---------------------------------------------------------------------------
 
 class TestProcessBatchMocked:
-
-    def _make_mock_ocr(self, text_blocks: list[dict]):
-        """
-        Returns a mock run_ocr function that yields a fake annotation
-        whose extract_text_blocks() output is the given text_blocks list.
-        """
-        mock_annotation = MagicMock()
-        mock_annotation.text = "mock"
-        mock_annotation.pages = []
-
-        def fake_run_ocr(pil_image, client=None):
-            return mock_annotation, "mock_hash_abc123"
-
-        return fake_run_ocr, mock_annotation
 
     @patch("app.routes.classify_screenshot")
     @patch("app.routes.run_ocr")
@@ -163,7 +162,7 @@ class TestProcessBatchMocked:
         response = client.post(
             "/process-batch",
             content_type="multipart/form-data",
-            data={"images": png_file_tuple("friday.png")},
+            data={"images": png_file_storage("friday.png")},
         )
 
         assert response.status_code == 200
@@ -192,7 +191,7 @@ class TestProcessBatchMocked:
         response = client.post(
             "/process-batch",
             content_type="multipart/form-data",
-            data={"images": png_file_tuple("friday.png")},
+            data={"images": png_file_storage("friday.png")},
         )
 
         assert response.status_code == 200
@@ -236,8 +235,8 @@ class TestProcessBatchMocked:
             "/process-batch",
             content_type="multipart/form-data",
             data={"images": [
-                png_file_tuple("friday.png"),
-                png_file_tuple("power.png"),
+                png_file_storage("friday.png"),
+                png_file_storage("power.png"),
             ]},
         )
 
@@ -278,7 +277,7 @@ class TestProcessBatchRealFixtures:
                 response = client.post(
                     "/process-batch",
                     content_type="multipart/form-data",
-                    data={"images": png_file_tuple(f"{fixture_name}.png")},
+                    data={"images": png_file_storage(f"{fixture_name}.png")},
                 )
 
         assert response.status_code == 200

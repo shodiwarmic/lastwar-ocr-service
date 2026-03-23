@@ -51,7 +51,7 @@ def pil_from_file_storage(file_storage: FileStorage) -> Optional[Image.Image]:
     except Exception as exc:
         logger.error(
             "Failed to open image from FileStorage",
-            extra={"filename": getattr(file_storage, "filename", "unknown"), "error": str(exc)},
+            extra={"image_filename": getattr(file_storage, "filename", "unknown"), "error": str(exc)},
         )
         return None
 
