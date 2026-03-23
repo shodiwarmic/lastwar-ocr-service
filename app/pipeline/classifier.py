@@ -302,54 +302,52 @@ def _ocr_detect_active_day(
     all_text_lower: set[str],
 ) -> Optional[str]:
     """
-    Identifies the active day tab from OCR text blocks using spatial analysis.
+    Identifies the active day tab from OCR text blocks using a scoring approach.
 
-    Strategy:
-    1. Find all text blocks whose text matches a day abbreviation.
-    2. Among those, identify which one has the lowest Y-coordinate bounding box
-       (i.e. appears highest in the image — in the tab bar region).
-    3. Return that day as the active tab.
+    Why Y-position does not work on real screenshots:
+        All 6 day tabs sit at the same Y coordinate in a single horizontal bar.
+        A y_spread guard always fires and returns None on real data.
 
-    This avoids relying on colour data in Pass 2 since we only have text here.
-    The day label with the smallest average Y bounding box vertex is the one
-    in the tab row. We then return the canonical day name.
+    Scoring strategy:
+        The active tab renders as white text on orange background. Vision API
+        tends to read it without a trailing period (e.g. "Fri" rather than
+        "Fri.") while inactive tabs retain the period ("Mon.", "Thur.").
+        We score each day +2 for a no-period occurrence and +1 for a
+        with-period occurrence. The highest-scoring day is returned.
+
+        Tiebreaker: among equal-scoring days, prefer the one with the
+        highest raw score, then earlier in Mon-Sat order as a last resort.
 
     Args:
-        text_blocks:   Full list of OCR text block dicts.
-        all_text_lower: Pre-computed set of lowercased text values for fast lookup.
+        text_blocks:    Full list of OCR text block dicts.
+        all_text_lower: Pre-computed set of lowercased text values.
 
     Returns:
-        Canonical day string (e.g. "thursday") or None if not found.
+        Canonical day string (e.g. "thursday") or None if no day tokens found.
     """
-    day_candidates: list[tuple[str, float]] = []
+    DAY_ORDER = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday"]
+    NO_PERIOD = {"mon", "tues", "wed", "thur", "fri", "sat"}
+
+    scores: dict[str, int] = {}
 
     for block in text_blocks:
-        text = block["text"].strip()
-        canonical = normalize_day_label(text)
+        raw = block["text"].strip()
+        canonical = normalize_day_label(raw)
         if canonical is None:
             continue
 
-        # Use avg_y directly from the block dict (already computed by ocr_client)
-        # Fall back to bbox computation if avg_y not present
-        avg_y = block.get("avg_y") or _avg_y_from_bbox(block.get("bbox", {}))
-        day_candidates.append((canonical, avg_y))
+        is_no_period = raw.rstrip(".").lower() in NO_PERIOD and not raw.endswith(".")
+        points = 2 if is_no_period else 1
+        scores[canonical] = scores.get(canonical, 0) + points
 
-    if not day_candidates:
+    if not scores:
         return None
 
-    # The active tab sits slightly higher (lower Y value) than inactive tabs
-    # because the UI renders it as visually elevated. Sort ascending by Y and
-    # return the day with the lowest Y — that is the active (elevated) tab.
-    day_candidates.sort(key=lambda x: x[1])
-
-    # If all tabs are at essentially the same Y (within 5px) we cannot distinguish
-    # them spatially — return None to avoid a wrong guess
-    if len(day_candidates) > 1:
-        y_spread = day_candidates[-1][1] - day_candidates[0][1]
-        if y_spread < 5:
-            return None
-
-    return day_candidates[0][0]
+    best_day = max(
+        scores.keys(),
+        key=lambda d: (scores[d], -DAY_ORDER.index(d) if d in DAY_ORDER else 0),
+    )
+    return best_day
 
 
 def _avg_y_from_bbox(bbox) -> float:

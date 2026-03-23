@@ -200,10 +200,10 @@ def friday_daily_blocks():
     """
     Synthetic OCR blocks representing a Friday Daily Rank screen.
 
-    The active tab (Fri.) is given a slightly lower Y value (255) than the
-    inactive tabs (265) to simulate the active tab being visually elevated
-    in the UI — matching the spatial signal the classifier uses to identify
-    the active day when multiple day abbreviations are present.
+    The active tab (Fri) is given WITHOUT a trailing period to simulate the
+    signal used by the scoring-based active day detector. Inactive day tabs
+    retain their periods (Mon., Tues., etc.). All tabs sit at the same Y
+    to match real screenshot behaviour where all tabs are in one horizontal bar.
     """
     return [
         make_block("RANKING",       300,  80),
@@ -211,14 +211,14 @@ def friday_daily_blocks():
         make_block("Rank",          195, 180),
         make_block("Weekly",        350, 180),
         make_block("Rank",          400, 180),
-        # Inactive day tabs — slightly lower Y (higher pixel value = lower on screen)
-        make_block("Mon.",           75, 265),
-        make_block("Tues.",         185, 265),
-        make_block("Wed.",          295, 265),
-        make_block("Thur.",         405, 265),
-        # Active tab — lower Y value = higher on screen = visually elevated
-        make_block("Fri.",          515, 255),
-        make_block("Sat.",          620, 265),
+        # Inactive tabs — with trailing period
+        make_block("Mon.",           75, 260),
+        make_block("Tues.",         185, 260),
+        make_block("Wed.",          295, 260),
+        make_block("Thur.",         405, 260),
+        # Active tab — no trailing period (scores +2 vs +1 for inactive tabs)
+        make_block("Fri",           515, 260),
+        make_block("Sat.",          620, 260),
         make_block("Ranking",        80, 340),
         make_block("Commander",     300, 340),
         make_block("Points",        550, 340),
