@@ -55,7 +55,7 @@ bp = Blueprint("main", __name__)
 _result_cache: dict[str, list[PlayerEntry]] = {}
 
 # Maximum number of images accepted per batch (safety limit)
-MAX_IMAGES_PER_BATCH = 20
+MAX_IMAGES_PER_BATCH = 100
 
 
 # ---------------------------------------------------------------------------
