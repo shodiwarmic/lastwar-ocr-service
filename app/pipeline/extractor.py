@@ -48,9 +48,10 @@ logger = get_logger(__name__)
 
 # Y-coordinate clustering tolerance as a fraction of image height.
 # Two word blocks within this fraction of each other are treated as one row.
-# 0.018 = 1.8% of image height — at 2400px tall that is ~43px, which safely
-# covers line height variation while keeping adjacent rows separate.
-ROW_CLUSTER_Y_TOLERANCE_FRACTION = 0.018
+# 0.012 = 1.2% of image height — at 2400px tall that is ~29px, which safely
+# covers line height variation (~10-15px) while keeping the player name line
+# separate from the alliance subtitle line (~60px below).
+ROW_CLUSTER_Y_TOLERANCE_FRACTION = 0.012
 
 # Minimum score value to accept — filters out rank numbers (1–100) and
 # small OCR noise values that pass the numeric check.
@@ -144,52 +145,61 @@ def build_rows_from_blocks(
     image_height: int = 2400,
 ) -> list[list[dict]]:
     """
-    Groups text blocks into logical rows using Y-coordinate proximity clustering.
+    Builds player rows using score-anchored upward clustering.
 
-    Blocks are already sorted top-to-bottom by ocr_client.extract_text_blocks().
-    We iterate through them and assign each block to an existing row if its Y
-    position is within tolerance of the row's current average Y, or start a
-    new row otherwise.
+    Instead of general Y-proximity clustering (which merges player name and
+    alliance subtitle since they have similar gaps to the score), this approach:
 
-    After clustering, each row is sorted left-to-right by avg_x so the score
-    (rightmost token) is always last.
+    1. Identifies score tokens (numeric values >= MIN_VALID_SCORE)
+    2. For each score, collects all non-score text blocks within an upward
+       band (UP_BAND px above the score, DOWN_BAND px below)
+    3. Name is always ABOVE the score in the UI; alliance is below — so
+       the asymmetric band captures the name and excludes the alliance
+
+    The band sizes are absolute pixels tuned to the observed layout:
+    - Score sits ~30px below the player name
+    - Alliance subtitle sits ~28px below the score
+    Using UP_BAND=50, DOWN_BAND=5 captures name but not alliance.
 
     Args:
-        text_blocks:  Sorted list of text block dicts.
-        image_height: Image height in pixels for tolerance calculation.
+        text_blocks:  List of text block dicts sorted top-to-bottom.
+        image_height: Unused — kept for API compatibility.
 
     Returns:
-        List of rows, where each row is a list of text block dicts sorted
-        left-to-right.
+        List of rows, each containing score block + associated name blocks,
+        sorted left-to-right.
     """
     if not text_blocks:
         return []
 
-    tolerance = image_height * ROW_CLUSTER_Y_TOLERANCE_FRACTION
-    rows: list[list[dict]] = []
-    row_avg_ys: list[float] = []
+    UP_BAND   = 50   # px above score to search for name tokens
+    DOWN_BAND =  5   # px below score (small buffer for OCR jitter)
 
-    for block in text_blocks:
-        block_y = block["avg_y"]
-        placed  = False
+    # Separate scores from name/other tokens
+    score_blocks = [b for b in text_blocks if _is_score_block(b)]
+    other_blocks = [b for b in text_blocks if not _is_score_block(b)]
 
-        for i, row_y in enumerate(row_avg_ys):
-            if abs(block_y - row_y) <= tolerance:
-                rows[i].append(block)
-                # Update running average Y for the row
-                row_avg_ys[i] = sum(b["avg_y"] for b in rows[i]) / len(rows[i])
-                placed = True
-                break
+    rows = []
+    for score_block in score_blocks:
+        score_y = score_block["avg_y"]
 
-        if not placed:
-            rows.append([block])
-            row_avg_ys.append(block_y)
-
-    # Sort each row left-to-right
-    for row in rows:
-        row.sort(key=lambda b: b["avg_x"])
+        # Collect name tokens in the upward band
+        row_blocks = [
+            b for b in other_blocks
+            if (score_y - UP_BAND) <= b["avg_y"] <= (score_y + DOWN_BAND)
+        ]
+        row_blocks.append(score_block)
+        row_blocks.sort(key=lambda b: b["avg_x"])
+        rows.append(row_blocks)
 
     return rows
+
+
+def _is_score_block(block: dict) -> bool:
+    """Returns True if a block looks like a player score (numeric >= MIN_VALID_SCORE)."""
+    from app.utils.text_utils import parse_score
+    val = parse_score(block["text"])
+    return val is not None and val >= MIN_VALID_SCORE
 
 
 # ---------------------------------------------------------------------------

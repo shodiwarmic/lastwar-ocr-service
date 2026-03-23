@@ -62,19 +62,21 @@ class TestBuildRowsFromBlocks:
     def test_empty_input_returns_empty(self):
         assert build_rows_from_blocks([], image_height=2400) == []
 
-    def test_tolerance_scales_with_image_height(self):
-        """Lower resolution image should use tighter absolute tolerance."""
-        # At 1200px height, tolerance = 1200 * 0.018 = ~21.6px
+    def test_score_anchored_clustering(self):
+        """Score-anchored approach groups name tokens above the score."""
         blocks = [
-            make_block("Player1", 300, 400),
-            make_block("Score1",  580, 425),  # 25px apart — should be separate rows at 1200px
+            make_block("SirBucksALot", 300, 400),   # name — above score
+            make_block("45,635,206",   580, 430),   # score — 30px below name
+            make_block("Pantheon",     300, 460),   # alliance — 30px below score
         ]
-        rows_low_res = build_rows_from_blocks(blocks, image_height=1200)
-        rows_hi_res  = build_rows_from_blocks(blocks, image_height=2400)
-        # At low res, 25px > tolerance (21.6px) → 2 rows
-        assert len(rows_low_res) == 2
-        # At high res, 25px < tolerance (43.2px) → 1 row
-        assert len(rows_hi_res) == 1
+        rows = build_rows_from_blocks(blocks, image_height=2400)
+        # Should find 1 row (1 score anchor)
+        assert len(rows) == 1
+        # Row should contain name + score but NOT alliance (below score)
+        texts = [b["text"] for b in rows[0]]
+        assert "SirBucksALot" in texts
+        assert "45,635,206" in texts
+        assert "Pantheon" not in texts
 
 
 # ---------------------------------------------------------------------------
@@ -231,18 +233,16 @@ class TestIsValidPlayerRow:
 class TestExtractPlayersSynthetic:
 
     def test_extracts_players_from_multiple_rows(self):
+        # Score-anchored: name must be ABOVE the score (lower Y value)
+        # Alliance subtitle is BELOW the score and should be excluded
         blocks = [
-            # Row 1: SirBucksALot
-            make_block("1",             60, 400),
-            make_block("[PoWr]",        160, 400),
-            make_block("SirBucksALot", 300, 401),
-            make_block("45,635,206",   580, 400),
-            # Row 2: Crazy Carol
-            make_block("2",             60, 490),
-            make_block("[PoWr]",        160, 490),
-            make_block("Crazy",        270, 491),
-            make_block("Carol",        350, 490),
-            make_block("33,871,230",   580, 490),
+            # Row 1: SirBucksALot — name at Y=400, score at Y=430
+            make_block("SirBucksALot", 300, 400),
+            make_block("45,635,206",   580, 430),
+            # Row 2: Crazy Carol — name at Y=530, score at Y=560
+            make_block("Crazy",        270, 530),
+            make_block("Carol",        350, 530),
+            make_block("33,871,230",   580, 560),
         ]
         players = extract_players(blocks, screen_type="friday", image_height=2400)
         assert len(players) == 2

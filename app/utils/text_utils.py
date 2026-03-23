@@ -307,7 +307,14 @@ def clean_player_name(raw_name: str) -> str:
         clean_player_name("48 R4 [PoWr] ShodiWarmic") → "ShodiWarmic"
         clean_player_name("[PoWr] SirBucksALot Pantheon of Wrath") → "SirBucksALot"
     """
-    name = strip_alliance_tag(raw_name)
+    # Truncate at the first open bracket when the name precedes the tag.
+    # e.g. "SirBucksALot [PoWr] Pantheon of Wrath" → "SirBucksALot"
+    # Only apply if the pre-bracket content is a plausible name (not just
+    # rank/badge noise like "48 R4"). Fall through to strip_alliance_tag
+    # for cases where the tag comes before the name.
+    _before_bracket = raw_name.split('[')[0].strip()
+    _after_noise = re.sub(r'^[\d\s\.R1-5]+', '', _before_bracket).strip()
+    name = _before_bracket if _after_noise else raw_name
     name = strip_bare_tags(name)
     name = strip_alliance_suffixes(name)
     name = strip_leading_rank(name)
