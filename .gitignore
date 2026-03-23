@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.Python
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Local environment & credentials (NEVER commit these)
+.env
+*.env
+service-account*.json
+*credentials*.json
+
+# Test output
+.pytest_cache/
+htmlcov/
+.coverage
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# OCR fixtures contain raw API responses - commit intentionally, not accidentally
+# Remove this line if you want fixtures tracked automatically
+tests/fixtures/ocr_responses/*.json
