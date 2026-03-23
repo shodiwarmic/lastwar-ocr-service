@@ -140,6 +140,7 @@ def capture_fixture_for_image(
     image_path: Path,
     output_dir: Path,
     dry_run: bool = False,
+    force: bool = False,
 ) -> bool:
     """
     Captures the Vision API response for a single image and writes it to JSON.
@@ -156,9 +157,11 @@ def capture_fixture_for_image(
     """
     output_path = output_dir / f"{image_path.stem}.json"
 
-    if output_path.exists():
+    if output_path.exists() and not force:
         print(f"  ⚠  Fixture already exists, skipping: {output_path.name}")
         return True
+    if output_path.exists() and force:
+        print(f"  ↻  Re-capturing (--force): {output_path.name}")
 
     if dry_run:
         print(f"  [DRY RUN] Would capture: {image_path.name} → {output_path.name}")
@@ -183,15 +186,41 @@ def capture_fixture_for_image(
         print(f"  ✗  OCR failed for: {image_path.name}")
         return False
 
-    # Serialise to dict
+    # Serialise to dict.
+    # Build text_blocks with proper dict bboxes — calling extract_text_blocks()
+    # on the live proto would store bbox as a proto string via _json_serialise_fallback.
+    def _extract_blocks_as_dicts(ann):
+        blocks = []
+        for page in ann.pages:
+            for block in page.blocks:
+                for paragraph in block.paragraphs:
+                    for word in paragraph.words:
+                        text = "".join(s.text for s in word.symbols).strip()
+                        if not text:
+                            continue
+                        bbox_dict = _bbox_to_dict(word.bounding_box)
+                        verts = bbox_dict.get("vertices", [])
+                        xs = [v["x"] for v in verts]
+                        ys = [v["y"] for v in verts]
+                        avg_x = sum(xs) / len(xs) if xs else 0.0
+                        avg_y = sum(ys) / len(ys) if ys else 0.0
+                        blocks.append({
+                            "text":  text,
+                            "bbox":  bbox_dict,
+                            "avg_x": avg_x,
+                            "avg_y": avg_y,
+                        })
+        blocks.sort(key=lambda b: (b["avg_y"], b["avg_x"]))
+        return blocks
+
     fixture_data = {
         "source_file":  image_path.name,
         "image_hash":   img_hash,
         "image_width":  pil_image.width,
         "image_height": pil_image.height,
         "annotation":   annotation_to_dict(annotation),
-        # Pre-extract text blocks for convenience in tests
-        "text_blocks":  extract_text_blocks(annotation),
+        # Pre-extract text blocks with properly serialised dict bboxes
+        "text_blocks":  _extract_blocks_as_dicts(annotation),
     }
 
     # Write JSON — text_blocks contain bbox objects, need custom serialisation
@@ -239,6 +268,11 @@ def main() -> None:
         "--dry-run",
         action="store_true",
         help="List images that would be processed without calling the API.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-capture fixtures even if they already exist. Use after tool fixes.",
     )
 
     args = parser.parse_args()
@@ -288,7 +322,7 @@ def main() -> None:
     fail_count    = 0
 
     for image_path in image_paths:
-        ok = capture_fixture_for_image(image_path, output_dir, dry_run=args.dry_run)
+        ok = capture_fixture_for_image(image_path, output_dir, dry_run=args.dry_run, force=args.force)
         if ok:
             success_count += 1
         else:

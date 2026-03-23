@@ -360,35 +360,58 @@ def _bbox_to_pixel_coords(bbox) -> tuple:
     """
     Extracts (left, top, right, bottom) pixel coordinates from a bounding box.
 
-    Handles both Vision API proto objects (with .vertices attribute) and
-    plain dicts (from JSON fixtures). Returns (None, None, None, None) on
-    any failure so the caller can skip gracefully.
+    Handles three formats:
+    1. Vision API BoundingPoly proto object (live API calls)
+    2. Dict with "vertices" list of {"x": int, "y": int} dicts (ideal JSON)
+    3. Proto string representation — produced when capture_ocr_fixture.py
+       falls back to str() serialisation, e.g.:
+           "vertices {\n  x: 406\n  y: 451\n}\n..."
+       This format is parsed with regex.
+
+    Returns (None, None, None, None) on any failure so the caller skips
+    gracefully rather than crashing.
 
     Args:
-        bbox: BoundingPoly proto or dict with 'vertices' key.
+        bbox: BoundingPoly proto, dict with vertices, or proto string.
 
     Returns:
         (left, top, right, bottom) integers or (None, None, None, None).
     """
+    import re
+
+    # 1. Proto object from live Vision API
     try:
-        # Proto object from live Vision API
         vertices = list(bbox.vertices)
         xs = [v.x for v in vertices]
         ys = [v.y for v in vertices]
-        return min(xs), min(ys), max(xs), max(ys)
+        if xs and ys:
+            return min(xs), min(ys), max(xs), max(ys)
     except AttributeError:
         pass
 
-    try:
-        # Dict form from JSON fixtures
-        vertices = bbox.get("vertices", [])
-        if not vertices:
-            return None, None, None, None
-        xs = [v.get("x", 0) for v in vertices]
-        ys = [v.get("y", 0) for v in vertices]
-        return min(xs), min(ys), max(xs), max(ys)
-    except (TypeError, AttributeError):
-        return None, None, None, None
+    # 2. Dict form {"vertices": [{"x": int, "y": int}, ...]}
+    if isinstance(bbox, dict):
+        try:
+            vertices = bbox.get("vertices", [])
+            if vertices and isinstance(vertices[0], dict):
+                xs = [v.get("x", 0) for v in vertices]
+                ys = [v.get("y", 0) for v in vertices]
+                if xs and ys:
+                    return min(xs), min(ys), max(xs), max(ys)
+        except (TypeError, IndexError):
+            pass
+
+    # 3. Proto string: "vertices {\n  x: 406\n  y: 451\n}\n..."
+    if isinstance(bbox, str) and "vertices" in bbox:
+        try:
+            xs = [int(v) for v in re.findall(r'x:\s*(-?\d+)', bbox)]
+            ys = [int(v) for v in re.findall(r'y:\s*(-?\d+)', bbox)]
+            if xs and ys:
+                return min(xs), min(ys), max(xs), max(ys)
+        except (ValueError, TypeError):
+            pass
+
+    return None, None, None, None
 
 
 # ---------------------------------------------------------------------------
