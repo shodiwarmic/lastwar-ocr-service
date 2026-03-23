@@ -223,28 +223,35 @@ def strip_bare_tags(name: str) -> str:
     """
     Removes bare alliance tag abbreviations that appear without brackets.
 
-    OCR sometimes returns [PoWr] with the brackets dropped, leaving the
-    abbreviation as a standalone word. Rather than hardcoding specific
-    alliance names, we detect the pattern generically: a short token
-    (2-6 chars) with internal uppercase letters (e.g. PoWr, CoRe, TaGs).
+    OCR sometimes returns [PoWr] with the brackets dropped in two ways:
+    1. As a standalone spaced token: "PoWr SirBucksALot"
+    2. Directly concatenated: "PoWrSirBucksALot" (no space)
 
-    This is applied after strip_alliance_tag so only unbracketed survivors
-    reach this step.
+    We handle both cases:
+    - Token pass: split by spaces, remove tokens matching the tag pattern
+    - Prefix pass: strip a leading tag-like prefix even when concatenated
+
+    Tag pattern: 2-6 chars with at least one internal uppercase letter
+    (e.g. PoWr, CoRe, TaGs). Length limit prevents matching real names.
 
     Args:
         name: Player name string potentially containing a bare tag abbreviation.
 
     Returns:
-        Name with detected alliance abbreviation tokens removed.
+        Name with detected alliance abbreviation tokens and prefixes removed.
 
     Examples:
-        strip_bare_tags("PoWr SirBucksALot")  → "SirBucksALot"
-        strip_bare_tags("CoRe PlayerName")     → "PlayerName"
-        strip_bare_tags("SirBucksALot")        → "SirBucksALot"  (unchanged)
+        strip_bare_tags("PoWr SirBucksALot")    → "SirBucksALot"
+        strip_bare_tags("PoWrSirBucksALot")     → "SirBucksALot"
+        strip_bare_tags("CoRe PlayerName")       → "PlayerName"
+        strip_bare_tags("SirBucksALot")          → "SirBucksALot"  (unchanged)
     """
+    # Pass 1: remove space-separated tokens that look like tags
     tokens = name.split()
     cleaned = [t for t in tokens if not _looks_like_tag(t)]
-    return " ".join(cleaned).strip()
+    name = " ".join(cleaned).strip()
+
+    return name.strip()
 
 
 def strip_alliance_suffixes(name: str) -> str:
