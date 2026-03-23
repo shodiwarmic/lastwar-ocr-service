@@ -237,32 +237,36 @@ def _detect_active_day_by_color(
     text_blocks: list[dict],
 ) -> Optional[str]:
     """
-    Identifies the active day tab by cropping to each day token's bounding box
-    and sampling the background colour of that region.
+    Identifies the active day tab by comparing background brightness across
+    all day tab regions.
 
-    Why this works:
-        The active tab renders as white/dark text on an orange background.
-        Inactive tabs have the same text on a grey/white background.
-        We don't read the text — we read the colour of the area around
-        the text. Orange → active. Grey → inactive.
+    Observation from real screenshots:
+        The active day tab has a WHITE/LIGHT background (high V, low S).
+        Inactive tabs have a GREY background (lower V, slightly warmer).
+        The orange colour is on the top-level "Daily Rank" tab, NOT the day row.
 
-    Process:
-        1. Find every text block whose text is a day abbreviation.
-        2. For each, expand the bounding box by TAB_BBOX_PADDING pixels to
-           capture the tab background (not just the tight text glyph area).
-        3. Crop that region from the PIL image.
-        4. Compute the average RGB of the crop.
-        5. Convert to HSV and check against orange thresholds.
-        6. Return the first day whose tab is orange, or None if none match.
+        Active tab:   V ≈ 0.74–0.81, S ≈ 0.019–0.025  (white/light)
+        Inactive tab: V ≈ 0.67–0.70, S ≈ 0.090–0.094  (warm grey)
+
+    Strategy:
+        Sample the background colour of every day tab bounding box.
+        Return the day whose crop has the highest brightness (V value).
+        To avoid false positives from image noise, require that the brightest
+        tab is at least BRIGHTNESS_GAP brighter than the second-brightest.
 
     Args:
         image:       PIL Image of the screenshot.
         text_blocks: OCR text block dicts containing bounding box data.
 
     Returns:
-        Canonical day string (e.g. "friday") or None if no orange tab found.
+        Canonical day string (e.g. "friday") or None if no clear winner.
     """
     img_w, img_h = image.size
+
+    # Minimum brightness advantage the active tab must have over others
+    BRIGHTNESS_GAP = 0.04
+
+    day_brightness: dict[str, float] = {}
 
     for block in text_blocks:
         text = block["text"].strip()
@@ -274,12 +278,10 @@ def _detect_active_day_by_color(
         if not bbox:
             continue
 
-        # Extract pixel coordinates from bounding box
         left, top, right, bottom = _bbox_to_pixel_coords(bbox)
         if left is None:
             continue
 
-        # Expand bounding box to capture tab background, clamped to image bounds
         left   = max(0,     left   - TAB_BBOX_PADDING)
         top    = max(0,     top    - TAB_BBOX_PADDING)
         right  = min(img_w, right  + TAB_BBOX_PADDING)
@@ -288,29 +290,45 @@ def _detect_active_day_by_color(
         if right <= left or bottom <= top:
             continue
 
-        # Crop and sample average colour
         crop = image.crop((left, top, right, bottom))
-        avg_rgb = _average_rgb(crop)
-        is_active = _is_orange_hsv(avg_rgb)
+        r, g, b = _average_rgb(crop)
+        _, s, v = colorsys.rgb_to_hsv(r / 255.0, g / 255.0, b / 255.0)
 
-        r, g, b = avg_rgb
-        h, s, v = colorsys.rgb_to_hsv(r / 255.0, g / 255.0, b / 255.0)
         logger.debug(
             "Tab colour sample",
             extra={
                 "day": canonical,
                 "crop_box": f"({left},{top},{right},{bottom})",
                 "avg_rgb": f"rgb({r},{g},{b})",
-                "hsv": f"h={h:.3f} s={s:.3f} v={v:.3f}",
-                "thresholds": f"H:{ORANGE_H_MIN}-{ORANGE_H_MAX} S>={ORANGE_S_MIN} V>={ORANGE_V_MIN}",
-                "is_orange": is_active,
+                "hsv": f"s={s:.3f} v={v:.3f}",
+                "brightness": round(v, 3),
             },
         )
 
-        if is_active:
-            return canonical
+        # Keep the highest brightness seen per day (handles duplicate tokens)
+        if canonical not in day_brightness or v > day_brightness[canonical]:
+            day_brightness[canonical] = v
 
-    return None
+    if not day_brightness:
+        return None
+
+    # Sort by brightness descending
+    ranked = sorted(day_brightness.items(), key=lambda x: x[1], reverse=True)
+
+    best_day, best_v = ranked[0]
+
+    # Require a clear brightness gap to avoid noise returning a wrong result
+    if len(ranked) > 1:
+        second_v = ranked[1][1]
+        if best_v - second_v < BRIGHTNESS_GAP:
+            logger.debug(
+                "Tab colour sampling inconclusive — brightness gap too small",
+                extra={"best": best_day, "best_v": round(best_v, 3),
+                       "second_v": round(second_v, 3), "gap": round(best_v - second_v, 3)},
+            )
+            return None
+
+    return best_day
 
 
 def _is_orange_hsv(rgb: tuple[int, int, int]) -> bool:
