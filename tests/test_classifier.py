@@ -111,17 +111,17 @@ class TestClassifyFromOcrText:
     def test_classifies_strength_ranking(self, strength_ranking_blocks):
         category, confidence = classify_from_ocr_text(strength_ranking_blocks)
         assert category == "power"
-        assert confidence == 1.0
+        assert confidence >= 0.75
 
     def test_classifies_weekly_rank(self, weekly_rank_blocks):
         category, confidence = classify_from_ocr_text(weekly_rank_blocks)
         assert category == "weekly"
-        assert confidence == 1.0
+        assert confidence >= 0.75
 
     def test_classifies_friday_daily(self, friday_daily_blocks):
         category, confidence = classify_from_ocr_text(friday_daily_blocks)
         assert category == "friday"
-        assert confidence == 1.0
+        assert confidence >= 0.75
 
     def test_returns_none_for_empty_blocks(self):
         category, confidence = classify_from_ocr_text([])

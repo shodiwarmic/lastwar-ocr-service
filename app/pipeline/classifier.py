@@ -71,11 +71,13 @@ TAB_BBOX_PADDING = 8
 
 # HSV thresholds for the orange active-tab background.
 # H is normalised 0.0–1.0 (0.0=red, 0.167=orange, 0.333=yellow).
-# Orange range corresponds to roughly 15–40 degrees on the 360° wheel.
-ORANGE_H_MIN = 0.040   # ~15°
-ORANGE_H_MAX = 0.115   # ~41°
-ORANGE_S_MIN = 0.55    # must be saturated (not grey)
-ORANGE_V_MIN = 0.65    # must be bright (not dark)
+# Broad range covers the Last War orange/amber tab across devices.
+# 0° = red, 30° = orange, 60° = yellow on the 360° wheel.
+# We cover 5°–55° to catch warm amber variants (H: 0.014–0.153).
+ORANGE_H_MIN = 0.014   # ~5°  — catches warm red-orange
+ORANGE_H_MAX = 0.153   # ~55° — catches yellow-orange/amber
+ORANGE_S_MIN = 0.40    # must be saturated (not grey) — lowered for compression
+ORANGE_V_MIN = 0.55    # must be reasonably bright — lowered for darker themes
 
 # Known text markers used in Pass 2 OCR-based classification
 _STRENGTH_MARKERS = {"strength ranking", "power", "kills", "donation"}
@@ -291,12 +293,16 @@ def _detect_active_day_by_color(
         avg_rgb = _average_rgb(crop)
         is_active = _is_orange_hsv(avg_rgb)
 
+        r, g, b = avg_rgb
+        h, s, v = colorsys.rgb_to_hsv(r / 255.0, g / 255.0, b / 255.0)
         logger.debug(
             "Tab colour sample",
             extra={
                 "day": canonical,
                 "crop_box": f"({left},{top},{right},{bottom})",
-                "avg_rgb": avg_rgb,
+                "avg_rgb": f"rgb({r},{g},{b})",
+                "hsv": f"h={h:.3f} s={s:.3f} v={v:.3f}",
+                "thresholds": f"H:{ORANGE_H_MIN}-{ORANGE_H_MAX} S>={ORANGE_S_MIN} V>={ORANGE_V_MIN}",
                 "is_orange": is_active,
             },
         )
@@ -415,7 +421,10 @@ def _ocr_detect_weekly(all_text_lower: set[str]) -> bool:
     return not day_tabs_visible
 
 
-def _ocr_detect_active_day_by_text(text_blocks: list[dict]) -> Optional[str]:
+def _ocr_detect_active_day_by_text(
+    text_blocks: list[dict],
+    all_text_lower: set[str] = None,  # accepted but unused — kept for backward compat
+) -> Optional[str]:
     """
     Text-only fallback for day detection when no PIL image is available.
 
@@ -428,7 +437,9 @@ def _ocr_detect_active_day_by_text(text_blocks: list[dict]) -> Optional[str]:
     banners). Only used when image is not available.
 
     Args:
-        text_blocks: OCR text block dicts.
+        text_blocks:    OCR text block dicts.
+        all_text_lower: Ignored — accepted for backward compatibility with
+                        older call sites that passed a pre-computed token set.
 
     Returns:
         Canonical day string or None.
