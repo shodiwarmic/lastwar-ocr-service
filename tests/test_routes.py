@@ -302,12 +302,17 @@ class TestProcessBatchRealFixtures:
         mock_ann.text = "fixture"
         mock_ann.pages = []
 
+        # Use the real screenshot if available so colour-based classification
+        # works correctly. Fall back to a synthetic PNG if not found — in that
+        # case Pass 1 will be ambiguous and Pass 2 text scoring takes over.
+        image_file = _real_image_or_synthetic(fixture_data.get("source_file", ""), fixture_name)
+
         with patch("app.routes.run_ocr", return_value=(mock_ann, fixture_data["image_hash"])):
             with patch("app.routes.extract_text_blocks", return_value=text_blocks):
                 response = client.post(
                     "/process-batch",
                     content_type="multipart/form-data",
-                    data={"images": png_file_storage(f"{fixture_name}.png")},
+                    data={"images": image_file},
                 )
 
         assert response.status_code == 200
@@ -317,3 +322,34 @@ class TestProcessBatchRealFixtures:
             f"in response keys {list(data.keys())}"
         )
         assert len(data[expected_category]) > 0
+
+
+def _real_image_or_synthetic(source_file: str, fixture_name: str) -> FileStorage:
+    """
+    Returns a FileStorage wrapping the real screenshot if it can be found,
+    otherwise returns a synthetic PNG. The real image is needed so that
+    colour-based day tab classification works correctly in route tests.
+    """
+    from pathlib import Path
+
+    search_dirs = [
+        Path("tests/fixtures/screenshots"),
+        Path.home() / "lastwar-screenshots",
+        Path.home() / "Pictures",
+        Path.home() / "Downloads",
+    ]
+
+    for directory in search_dirs:
+        for name in [source_file, f"{fixture_name}.png"]:
+            if not name:
+                continue
+            candidate = directory / name
+            if candidate.exists():
+                return FileStorage(
+                    stream=io.BytesIO(candidate.read_bytes()),
+                    filename=name,
+                    content_type="image/png",
+                )
+
+    # Real screenshot not found — fall back to synthetic
+    return png_file_storage(f"{fixture_name}.png")
