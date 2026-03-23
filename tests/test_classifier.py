@@ -24,7 +24,7 @@ from app.pipeline.classifier import (
     classify_from_ocr_text,
     _ocr_detect_strength,
     _ocr_detect_weekly,
-    _ocr_detect_active_day,
+    _ocr_detect_active_day_by_text as _ocr_detect_active_day,
 )
 from tests.conftest import FIXTURE_DIR, get_text_blocks, load_fixture, make_block
 
