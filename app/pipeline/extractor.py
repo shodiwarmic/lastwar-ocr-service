@@ -65,6 +65,7 @@ def extract_players(
     text_blocks: list[dict],
     screen_type: str,
     image_height: int = 2400,
+    image_width: int = 1080,
 ) -> list[PlayerEntry]:
     """
     Converts a flat list of OCR text blocks into a list of PlayerEntry objects.
@@ -85,6 +86,8 @@ def extract_players(
                       R-badge tokens that Daily/Weekly rows do not.
         image_height: Height of the source image in pixels, used to compute
                       the absolute Y-tolerance for row clustering.
+        image_width:  Width of the source image in pixels, used to compute
+                      the relative gap threshold for word spacing detection.
 
     Returns:
         List of validated PlayerEntry objects. Empty list if no valid rows found.
@@ -102,7 +105,7 @@ def extract_players(
     # Step 3-5: Parse, clean, validate
     players: list[PlayerEntry] = []
     for row in rows:
-        result = parse_player_row(row)
+        result = parse_player_row(row, image_width=image_width)
         if result is None:
             continue
 
@@ -193,7 +196,10 @@ def build_rows_from_blocks(
 # Row parsing
 # ---------------------------------------------------------------------------
 
-def parse_player_row(row_blocks: list[dict]) -> tuple[str, str] | None:
+def parse_player_row(
+    row_blocks: list[dict],
+    image_width: int = 0,
+) -> tuple[str, str] | None:
     """
     Extracts a (raw_name_string, raw_score_string) pair from a single row.
 
@@ -208,9 +214,11 @@ def parse_player_row(row_blocks: list[dict]) -> tuple[str, str] | None:
        avoids over-spacing in compact names.
 
     Args:
-        row_blocks: List of text block dicts for one row, sorted left-to-right.
-                    Each block must have "text", "avg_x" fields. Optionally
-                    "bbox" for precise left/right edge calculation.
+        row_blocks:  List of text block dicts for one row, sorted left-to-right.
+                     Each block must have "text", "avg_x" fields. Optionally
+                     "bbox" for precise left/right edge calculation.
+        image_width: Width of the source image in pixels. Used to compute a
+                     relative GAP_THRESHOLD so spacing scales across devices.
 
     Returns:
         (raw_name, raw_score) tuple or None if no score token found.
@@ -219,8 +227,10 @@ def parse_player_row(row_blocks: list[dict]) -> tuple[str, str] | None:
         return None
 
     # Minimum pixel gap between word bounding boxes to insert a space.
-    # Tuned against sample screenshots — visible word spacing is ~8-15px.
-    GAP_THRESHOLD = 10
+    # Expressed as a fraction of image width so it scales across devices.
+    # At 1080px wide: 0.015 * 1080 = ~16px (typical inter-word spacing).
+    # Falls back to 16px if image_width is not provided.
+    GAP_THRESHOLD = max(8, int(image_width * 0.015)) if image_width else 16
 
     # Find the rightmost numeric token and its left edge X position
     score_index = None

@@ -127,7 +127,7 @@ class TestParsePlayerRow:
             make_block("of",               690, 400),
             make_block("Wrath",            720, 400),
         ]
-        result = parse_player_row(blocks)
+        result = parse_player_row(blocks, image_width=1080)
         assert result is not None
         raw_name, raw_score = result
         assert "Pantheon" not in raw_name
@@ -184,6 +184,15 @@ class TestCleanPlayerName:
     def test_full_noisy_row(self):
         # Simulate a full raw string as it arrives from OCR in the real pipeline
         result = clean_player_name("1 R4 [PoWr] SirBucksALot Pantheon of Wrath")
+        assert result == "SirBucksALot"
+
+    def test_strips_bare_tag_without_brackets(self):
+        # OCR sometimes returns PoWr without brackets as a standalone token
+        assert clean_player_name("PoWr SirBucksALot") == "SirBucksALot"
+
+    def test_strips_bare_tag_combined_with_suffix(self):
+        # Full production scenario: bracket stripped leaving bare tag + suffix
+        result = clean_player_name("PoWr SirBucksALot Pantheon of Wrath")
         assert result == "SirBucksALot"
 
 

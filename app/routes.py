@@ -215,8 +215,8 @@ def process_batch():
             continue
 
         # Extract players directly from the OCR already performed
-        _, h = get_image_dimensions(pil_image)
-        players = extract_players(text_blocks, screen_type=category, image_height=h)
+        w, h = get_image_dimensions(pil_image)
+        players = extract_players(text_blocks, screen_type=category, image_height=h, image_width=w)
 
         # Cache the result
         _result_cache[img_hash_returned] = players
@@ -248,8 +248,8 @@ def process_batch():
             continue
 
         text_blocks = extract_text_blocks(annotation)
-        _, h = get_image_dimensions(stitched_image)
-        players = extract_players(text_blocks, screen_type=category, image_height=h)
+        w, h = get_image_dimensions(stitched_image)
+        players = extract_players(text_blocks, screen_type=category, image_height=h, image_width=w)
 
         _result_cache[img_hash_returned] = players
         result.add_entries(category, players)
