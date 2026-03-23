@@ -35,9 +35,14 @@ _RBADGE_RE = re.compile(r"\bR[1-5]\b")
 # Score string: digits optionally separated by commas (e.g. "161,528,090")
 _SCORE_RE = re.compile(r"^[\d,]+$")
 
-# Stray non-alphanumeric characters that are clearly OCR noise
-# Keeps spaces, hyphens, underscores, and apostrophes (valid in names)
-_OCR_NOISE_RE = re.compile(r"[^\w\s\-_']")
+# Stray non-alphanumeric characters that are clearly OCR noise.
+# Keeps spaces, hyphens, underscores, apostrophes, and extended Latin/Cyrillic
+# so accented names like Pàcha are preserved.
+_OCR_NOISE_RE = re.compile(r"[^\w\s\-_\'\u00C0-\u024F\u0400-\u04FF]")
+
+# Thai character range — appears as OCR noise from rank badge icons in
+# the Strength Ranking screen. Ported from the original app.py implementation.
+_THAI_RE = re.compile(r"[\u0E00-\u0E7F]+")
 
 # Collapse multiple consecutive spaces into one
 _WHITESPACE_RE = re.compile(r"\s{2,}")
@@ -48,6 +53,21 @@ _UI_LABELS = frozenset({
     "daily rank", "weekly rank", "strength ranking", "mon", "tues",
     "wed", "thur", "fri", "sat", "your alliance",
 })
+
+# Alliance name suffixes that survive bracket stripping because they appear
+# as plain text tokens in the OCR output rather than inside brackets.
+# These are the visible alliance display names shown beneath player names.
+# Add new entries here as alliances are encountered in production logs.
+_ALLIANCE_NAME_SUFFIXES: list[str] = [
+    "Pantheon of Wrath",
+]
+
+# Pre-compiled case-insensitive patterns for efficient suffix stripping
+_ALLIANCE_SUFFIX_RES = [
+    re.compile(re.escape(s), re.IGNORECASE)
+    for s in _ALLIANCE_NAME_SUFFIXES
+]
+
 
 # Day tab label to output key mapping
 # Keys are lowercase normalised versions of what OCR returns
@@ -170,16 +190,64 @@ def collapse_whitespace(s: str) -> str:
     return _WHITESPACE_RE.sub(" ", s).strip()
 
 
+def strip_thai_characters(name: str) -> str:
+    """
+    Removes Thai script characters from a name string.
+
+    Thai characters appear as OCR noise when Vision API misreads rank badge
+    icons on the Strength Ranking screen. They do not appear in any player
+    name and can be safely stripped unconditionally.
+
+    Args:
+        name: Player name string potentially containing Thai characters.
+
+    Returns:
+        Name with all Thai characters removed.
+    """
+    return _THAI_RE.sub("", name).strip()
+
+
+def strip_alliance_suffixes(name: str) -> str:
+    """
+    Removes known alliance display names that appear as plain text suffixes.
+
+    Some alliances display their full name as a subtitle beneath the player
+    name. Vision API reads this as part of the same text block, producing
+    strings like "SirBucksALot Pantheon of Wrath". The bracket tag [PoWr]
+    is stripped by strip_alliance_tag, but the display name survives.
+
+    Entries in _ALLIANCE_NAME_SUFFIXES are matched case-insensitively and
+    removed wherever they appear in the string (not just at the end).
+
+    To add a new alliance name, append it to _ALLIANCE_NAME_SUFFIXES at the
+    top of this module — no code changes needed here.
+
+    Args:
+        name: Player name string potentially containing an alliance display name.
+
+    Returns:
+        Name with all known alliance display suffixes removed.
+
+    Example:
+        strip_alliance_suffixes("SirBucksALot Pantheon of Wrath") → "SirBucksALot"
+    """
+    for pattern in _ALLIANCE_SUFFIX_RES:
+        name = pattern.sub("", name)
+    return name.strip()
+
+
 def clean_player_name(raw_name: str) -> str:
     """
     Full name cleaning pipeline in order of operation.
 
     Applies all cleaning steps in sequence:
-    1. Strip alliance tags  (e.g. [PoWr])
-    2. Strip leading rank   (e.g. "48 ")
-    3. Strip R-badge tokens (e.g. R4)
-    4. Strip OCR noise      (stray symbols)
-    5. Collapse whitespace
+    1. Strip alliance tags     (e.g. [PoWr])
+    2. Strip alliance suffixes (e.g. "Pantheon of Wrath")
+    3. Strip leading rank      (e.g. "48 ")
+    4. Strip R-badge tokens    (e.g. R4)
+    5. Strip Thai characters   (OCR noise from rank badge icons)
+    6. Strip OCR noise         (stray symbols)
+    7. Collapse whitespace
 
     Args:
         raw_name: Unprocessed name string direct from OCR output.
@@ -187,12 +255,15 @@ def clean_player_name(raw_name: str) -> str:
     Returns:
         Clean player name suitable for storage and display.
 
-    Example:
+    Examples:
         clean_player_name("48 R4 [PoWr] ShodiWarmic") → "ShodiWarmic"
+        clean_player_name("[PoWr] SirBucksALot Pantheon of Wrath") → "SirBucksALot"
     """
     name = strip_alliance_tag(raw_name)
+    name = strip_alliance_suffixes(name)
     name = strip_leading_rank(name)
     name = strip_rbadge_artefacts(name)
+    name = strip_thai_characters(name)
     name = strip_ocr_noise(name)
     name = collapse_whitespace(name)
     return name

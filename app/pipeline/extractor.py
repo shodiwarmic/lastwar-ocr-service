@@ -197,14 +197,20 @@ def parse_player_row(row_blocks: list[dict]) -> tuple[str, str] | None:
     """
     Extracts a (raw_name_string, raw_score_string) pair from a single row.
 
-    Strategy:
-    - Scan the row right-to-left for the first numeric token (with commas).
-      That is the score.
-    - Everything to the left of the score token is joined as the player name.
-    - If no numeric token is found the row is not a player row → return None.
+    Strategy (ported and improved from original spatial parser):
+    1. Find the rightmost numeric token — that is the score.
+    2. Only accept name tokens that are spatially LEFT of the score token
+       (leftward X constraint). This eliminates alliance display names and
+       other text that appears to the right of or at the same X as the score.
+    3. Reconstruct the name string using pixel gap detection: insert a space
+       between tokens when the gap between them exceeds GAP_THRESHOLD pixels,
+       which correctly handles multi-word names like "gabriel garage" and
+       avoids over-spacing in compact names.
 
     Args:
         row_blocks: List of text block dicts for one row, sorted left-to-right.
+                    Each block must have "text", "avg_x" fields. Optionally
+                    "bbox" for precise left/right edge calculation.
 
     Returns:
         (raw_name, raw_score) tuple or None if no score token found.
@@ -212,25 +218,87 @@ def parse_player_row(row_blocks: list[dict]) -> tuple[str, str] | None:
     if not row_blocks:
         return None
 
-    texts = [b["text"] for b in row_blocks]
+    # Minimum pixel gap between word bounding boxes to insert a space.
+    # Tuned against sample screenshots — visible word spacing is ~8-15px.
+    GAP_THRESHOLD = 10
 
-    # Find the rightmost numeric token
+    # Find the rightmost numeric token and its left edge X position
     score_index = None
-    for i in range(len(texts) - 1, -1, -1):
-        if is_numeric_token(texts[i]):
+    score_left_x = None
+    for i in range(len(row_blocks) - 1, -1, -1):
+        if is_numeric_token(row_blocks[i]["text"]):
             score_index = i
+            score_left_x = _block_left_x(row_blocks[i])
             break
 
     if score_index is None:
         return None
 
-    raw_score = texts[score_index]
-    raw_name  = " ".join(texts[:score_index])
+    raw_score = row_blocks[score_index]["text"]
 
-    if not raw_name.strip():
+    # Collect name blocks: must be LEFT of the score token
+    name_blocks = [
+        b for b in row_blocks[:score_index]
+        if score_left_x is None or _block_right_x(b) <= score_left_x
+    ]
+
+    if not name_blocks:
+        return None
+
+    # Build name string with gap-based space insertion
+    parts = [name_blocks[0]["text"]]
+    for i in range(1, len(name_blocks)):
+        prev_right = _block_right_x(name_blocks[i - 1])
+        curr_left  = _block_left_x(name_blocks[i])
+        gap = curr_left - prev_right if (curr_left and prev_right) else GAP_THRESHOLD + 1
+        if gap > GAP_THRESHOLD:
+            parts.append(" ")
+        parts.append(name_blocks[i]["text"])
+
+    raw_name = "".join(parts).strip()
+
+    if not raw_name:
         return None
 
     return raw_name, raw_score
+
+
+def _block_left_x(block: dict) -> float | None:
+    """Returns the leftmost X coordinate of a text block, or None if unavailable."""
+    bbox = block.get("bbox")
+    if not bbox:
+        return block.get("avg_x")
+    try:
+        vertices = list(bbox.vertices)
+        return min(v.x for v in vertices)
+    except AttributeError:
+        pass
+    try:
+        verts = bbox.get("vertices", [])
+        if verts:
+            return min(v.get("x", 0) for v in verts)
+    except (TypeError, AttributeError):
+        pass
+    return block.get("avg_x")
+
+
+def _block_right_x(block: dict) -> float | None:
+    """Returns the rightmost X coordinate of a text block, or None if unavailable."""
+    bbox = block.get("bbox")
+    if not bbox:
+        return block.get("avg_x")
+    try:
+        vertices = list(bbox.vertices)
+        return max(v.x for v in vertices)
+    except AttributeError:
+        pass
+    try:
+        verts = bbox.get("vertices", [])
+        if verts:
+            return max(v.get("x", 0) for v in verts)
+    except (TypeError, AttributeError):
+        pass
+    return block.get("avg_x")
 
 
 # ---------------------------------------------------------------------------

@@ -112,6 +112,28 @@ class TestParsePlayerRow:
     def test_returns_none_for_empty_row(self):
         assert parse_player_row([]) is None
 
+    def test_leftward_constraint_excludes_right_side_tokens(self):
+        """
+        Tokens to the right of the score should be excluded from the name.
+        This prevents alliance display names from bleeding into player names
+        when OCR places them on the same row after the score.
+        """
+        blocks = [
+            make_block("[PoWr]",           60, 400),
+            make_block("SirBucksALot",    200, 400),
+            make_block("45,635,206",       500, 400),
+            # These appear to the right of the score — should be excluded
+            make_block("Pantheon",         620, 400),
+            make_block("of",               690, 400),
+            make_block("Wrath",            720, 400),
+        ]
+        result = parse_player_row(blocks)
+        assert result is not None
+        raw_name, raw_score = result
+        assert "Pantheon" not in raw_name
+        assert "Wrath" not in raw_name
+        assert "SirBucksALot" in raw_name
+
 
 # ---------------------------------------------------------------------------
 # Name cleaning
@@ -138,10 +160,31 @@ class TestCleanPlayerName:
         assert clean_player_name("[PoWr] gabriel garage") == "gabriel garage"
 
     def test_handles_tag_without_space(self):
-        # "[PoWr]Pantheon" — no space between tag and name
+        # "[PoWr]Pantheon" — bracket tag stripped, display name also stripped
         result = clean_player_name("[PoWr]Pantheon of Wrath")
         assert "[PoWr]" not in result
-        assert "Pantheon" in result
+
+    def test_strips_alliance_display_name(self):
+        # Alliance display name appears as plain text after the bracket tag is stripped
+        assert clean_player_name("[PoWr] SirBucksALot Pantheon of Wrath") == "SirBucksALot"
+
+    def test_strips_alliance_display_name_case_insensitive(self):
+        assert clean_player_name("SirBucksALot pantheon of wrath") == "SirBucksALot"
+
+    def test_strips_thai_characters(self):
+        # Thai OCR noise from rank badge icons on Strength Ranking screen
+        result = clean_player_name("รๆ3 ShodiWarmic")
+        assert "ShodiWarmic" in result
+        assert "ร" not in result
+
+    def test_preserves_accented_characters(self):
+        # Accented names like Pàcha must survive cleaning
+        assert clean_player_name("Pàcha") == "Pàcha"
+
+    def test_full_noisy_row(self):
+        # Simulate a full raw string as it arrives from OCR in the real pipeline
+        result = clean_player_name("1 R4 [PoWr] SirBucksALot Pantheon of Wrath")
+        assert result == "SirBucksALot"
 
 
 # ---------------------------------------------------------------------------
