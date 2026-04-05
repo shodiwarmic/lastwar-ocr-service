@@ -246,10 +246,13 @@ def strip_bare_tags(name: str) -> str:
         strip_bare_tags("CoRe PlayerName")       → "PlayerName"
         strip_bare_tags("SirBucksALot")          → "SirBucksALot"  (unchanged)
     """
-    # Pass 1: remove space-separated tokens that look like tags
+    # Pass 1: remove space-separated tokens that look like tags, but only if
+    # there are other tokens remaining — avoids wiping out a player name that
+    # happens to match the tag pattern (e.g. "SayTin", "CoNor").
     tokens = name.split()
-    cleaned = [t for t in tokens if not _looks_like_tag(t)]
-    name = " ".join(cleaned).strip()
+    non_tags = [t for t in tokens if not _looks_like_tag(t)]
+    if non_tags:
+        name = " ".join(non_tags).strip()
 
     return name.strip()
 
