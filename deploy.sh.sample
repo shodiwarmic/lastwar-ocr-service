@@ -1,0 +1,37 @@
+#!/bin/bash
+# deploy.sh.sample — copy to deploy.sh and fill in your values.
+# deploy.sh is gitignored so project-specific config stays off the repo.
+#
+# Usage:
+#   cp deploy.sh.sample deploy.sh
+#   chmod +x deploy.sh
+#   ./deploy.sh
+
+set -euo pipefail
+
+# ── Configuration ────────────────────────────────────────────────────────────
+PROJECT_ID="your-gcloud-project-id"
+REGION="us-east1"
+SERVICE_NAME="lastwar-ocr-service"
+IMAGE="gcr.io/${PROJECT_ID}/${SERVICE_NAME}"
+# ─────────────────────────────────────────────────────────────────────────────
+
+echo "==> Pushing local commits to origin..."
+git push
+
+echo "==> Building and pushing container image..."
+gcloud builds submit --tag "${IMAGE}" --project "${PROJECT_ID}"
+
+echo "==> Deploying to Cloud Run..."
+gcloud run deploy "${SERVICE_NAME}" \
+  --image "${IMAGE}" \
+  --region "${REGION}" \
+  --platform managed \
+  --project "${PROJECT_ID}"
+
+echo ""
+echo "Deploy complete."
+gcloud run services describe "${SERVICE_NAME}" \
+  --region "${REGION}" \
+  --project "${PROJECT_ID}" \
+  --format="value(status.address.url)"
