@@ -80,6 +80,7 @@ def get_vision_client() -> vision.ImageAnnotatorClient:
 def run_ocr(
     pil_image: Image.Image,
     client: Optional[vision.ImageAnnotatorClient] = None,
+    fmt: str = "JPEG",
 ) -> tuple[Optional[object], str]:
     """
     Submits a PIL Image to the Vision API and returns the text annotation.
@@ -108,7 +109,7 @@ def run_ocr(
     """
     client = client or get_vision_client()
 
-    img_bytes = pil_to_bytes(pil_image, fmt="PNG")
+    img_bytes = pil_to_bytes(pil_image, fmt=fmt)
     img_hash  = _hash_image_bytes(img_bytes)
 
     vision_image = vision.Image(content=img_bytes)
