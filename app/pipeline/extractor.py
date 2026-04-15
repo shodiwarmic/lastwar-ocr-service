@@ -32,6 +32,7 @@ Known edge cases handled:
 from __future__ import annotations
 
 from app.models.schemas import PlayerEntry
+from app.pipeline.screen_definitions import RowClusteringConfig, get_definition_for_category
 from app.utils.text_utils import (
     clean_player_name,
     is_numeric_token,
@@ -97,16 +98,19 @@ def extract_players(
         logger.warning("extract_players called with empty text_blocks", extra={"screen_type": screen_type})
         return []
 
+    defn = get_definition_for_category(screen_type)
+    row_config = defn.row_clustering if defn else RowClusteringConfig()
+
     # Step 1: Filter blocks that are clearly not player data
     filtered = _filter_noise_blocks(text_blocks)
 
     # Step 2: Cluster into rows
-    rows = build_rows_from_blocks(filtered, image_height)
+    rows = build_rows_from_blocks(filtered, image_height, row_config)
 
     # Step 3-5: Parse, clean, validate
     players: list[PlayerEntry] = []
     for row in rows:
-        result = parse_player_row(row, image_width=image_width)
+        result = parse_player_row(row, image_width=image_width, row_config=row_config)
         if result is None:
             continue
 
@@ -114,7 +118,7 @@ def extract_players(
         clean_name = clean_player_name(raw_name)
         score      = parse_score(raw_score)
 
-        if not is_valid_player_row(clean_name, score):
+        if not is_valid_player_row(clean_name, score, min_score=row_config.min_score):
             continue
 
         try:
@@ -143,6 +147,7 @@ def extract_players(
 def build_rows_from_blocks(
     text_blocks: list[dict],
     image_height: int = 2400,
+    row_config: RowClusteringConfig = None,
 ) -> list[list[dict]]:
     """
     Builds player rows using score-anchored upward clustering.
@@ -150,20 +155,21 @@ def build_rows_from_blocks(
     Instead of general Y-proximity clustering (which merges player name and
     alliance subtitle since they have similar gaps to the score), this approach:
 
-    1. Identifies score tokens (numeric values >= MIN_VALID_SCORE)
+    1. Identifies score tokens (numeric values >= row_config.min_score)
     2. For each score, collects all non-score text blocks within an upward
        band (UP_BAND px above the score, DOWN_BAND px below)
     3. Name is always ABOVE the score in the UI; alliance is below — so
        the asymmetric band captures the name and excludes the alliance
 
-    The band sizes are absolute pixels tuned to the observed layout:
-    - Score sits ~30px below the player name
-    - Alliance subtitle sits ~28px below the score
-    Using UP_BAND=50, DOWN_BAND=5 captures name but not alliance.
+    Band sizes are derived from screen definition fractions scaled to
+    image_height so they work correctly across device resolutions.
 
     Args:
         text_blocks:  List of text block dicts sorted top-to-bottom.
-        image_height: Unused — kept for API compatibility.
+        image_height: Source image height in pixels, used to compute
+                      absolute band sizes from the definition fractions.
+        row_config:   Row clustering configuration from the screen
+                      definition. Defaults to RowClusteringConfig() if None.
 
     Returns:
         List of rows, each containing score block + associated name blocks,
@@ -172,12 +178,16 @@ def build_rows_from_blocks(
     if not text_blocks:
         return []
 
-    UP_BAND   = 50   # px above score to search for name tokens
-    DOWN_BAND =  5   # px below score (small buffer for OCR jitter)
+    if row_config is None:
+        row_config = RowClusteringConfig()
+
+    UP_BAND   = max(1, int(row_config.score_anchored.up_band_fraction   * image_height))
+    DOWN_BAND = max(1, int(row_config.score_anchored.down_band_fraction * image_height))
+    min_score = row_config.min_score
 
     # Separate scores from name/other tokens
-    score_blocks = [b for b in text_blocks if _is_score_block(b)]
-    other_blocks = [b for b in text_blocks if not _is_score_block(b)]
+    score_blocks = [b for b in text_blocks if _is_score_block(b, min_score)]
+    other_blocks = [b for b in text_blocks if not _is_score_block(b, min_score)]
 
     rows = []
     for score_block in score_blocks:
@@ -195,11 +205,11 @@ def build_rows_from_blocks(
     return rows
 
 
-def _is_score_block(block: dict) -> bool:
-    """Returns True if a block looks like a player score (numeric >= MIN_VALID_SCORE)."""
+def _is_score_block(block: dict, min_score: int = MIN_VALID_SCORE) -> bool:
+    """Returns True if a block looks like a player score (numeric >= min_score)."""
     from app.utils.text_utils import parse_score
     val = parse_score(block["text"])
-    return val is not None and val >= MIN_VALID_SCORE
+    return val is not None and val >= min_score
 
 
 # ---------------------------------------------------------------------------
@@ -209,6 +219,7 @@ def _is_score_block(block: dict) -> bool:
 def parse_player_row(
     row_blocks: list[dict],
     image_width: int = 0,
+    row_config: RowClusteringConfig = None,
 ) -> tuple[str, str] | None:
     """
     Extracts a (raw_name_string, raw_score_string) pair from a single row.
@@ -229,6 +240,9 @@ def parse_player_row(
                      "bbox" for precise left/right edge calculation.
         image_width: Width of the source image in pixels. Used to compute a
                      relative GAP_THRESHOLD so spacing scales across devices.
+        row_config:  Row clustering configuration from the screen definition.
+                     Provides word_gap_fraction and min_word_gap_px. Defaults
+                     to RowClusteringConfig() if None.
 
     Returns:
         (raw_name, raw_score) tuple or None if no score token found.
@@ -236,11 +250,16 @@ def parse_player_row(
     if not row_blocks:
         return None
 
+    if row_config is None:
+        row_config = RowClusteringConfig()
+
     # Minimum pixel gap between word bounding boxes to insert a space.
-    # Expressed as a fraction of image width so it scales across devices.
-    # At 1080px wide: 0.015 * 1080 = ~16px (typical inter-word spacing).
-    # Falls back to 16px if image_width is not provided.
-    GAP_THRESHOLD = max(8, int(image_width * 0.015)) if image_width else 16
+    # Fraction and minimum are sourced from the screen definition so they
+    # stay consistent with any per-screen tuning in the YAML.
+    GAP_THRESHOLD = (
+        max(row_config.min_word_gap_px, int(image_width * row_config.word_gap_fraction))
+        if image_width else row_config.min_word_gap_px * 2
+    )
 
     # Find the rightmost numeric token and its left edge X position
     score_index = None
@@ -325,19 +344,21 @@ def _block_right_x(block: dict) -> float | None:
 # Validation
 # ---------------------------------------------------------------------------
 
-def is_valid_player_row(name: str, score) -> bool:
+def is_valid_player_row(name: str, score, min_score: int = MIN_VALID_SCORE) -> bool:
     """
     Returns True if a (name, score) pair represents a real player row.
 
     Rejects:
     - Empty names
     - None or zero scores
-    - Scores below MIN_VALID_SCORE (filters out rank numbers 1–100)
+    - Scores below min_score (filters out rank numbers 1–100)
     - Names that match known UI labels (column headers, tab names)
 
     Args:
-        name:  Cleaned player name string.
-        score: Parsed integer score or None.
+        name:      Cleaned player name string.
+        score:     Parsed integer score or None.
+        min_score: Minimum score to accept. Sourced from the screen definition's
+                   row_clustering.min_score; falls back to MIN_VALID_SCORE.
 
     Returns:
         True if the row should be included in the output.
@@ -348,7 +369,7 @@ def is_valid_player_row(name: str, score) -> bool:
     if score is None:
         return False
 
-    if score < MIN_VALID_SCORE:
+    if score < min_score:
         return False
 
     if is_ui_label(name):

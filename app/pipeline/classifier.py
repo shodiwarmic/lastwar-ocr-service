@@ -37,6 +37,7 @@ from typing import Optional
 
 from PIL import Image
 
+from app.pipeline.screen_definitions import load_all
 from app.utils.image_utils import sample_color_region, is_orange
 from app.utils.text_utils import normalize_day_label
 from app.utils.logger import get_logger
@@ -49,35 +50,10 @@ logger = get_logger(__name__)
 
 CONFIDENCE_THRESHOLD = 0.80
 
-TAB_BAR_Y_FRACTION   = 0.20
-HEADER_Y_FRACTION    = 0.10
-WEEKLY_TAB_X_FRACTION = 0.65
-
-DAY_TAB_X_POSITIONS = {
-    "monday":    0.10,
-    "tuesday":   0.26,
-    "wednesday": 0.42,
-    "thursday":  0.58,
-    "friday":    0.74,
-    "saturday":  0.90,
-}
-
-STRENGTH_POWER_TAB_X = 0.15
-
 # Pixels to expand around a day-tab bounding box when sampling background
 # colour. The text bbox is tight around the characters; expanding ensures
 # we sample the tab background rather than the text glyphs themselves.
 TAB_BBOX_PADDING = 8
-
-# HSV thresholds for the orange active-tab background.
-# H is normalised 0.0–1.0 (0.0=red, 0.167=orange, 0.333=yellow).
-# Broad range covers the Last War orange/amber tab across devices.
-# 0° = red, 30° = orange, 60° = yellow on the 360° wheel.
-# We cover 5°–55° to catch warm amber variants (H: 0.014–0.153).
-ORANGE_H_MIN = 0.014   # ~5°  — catches warm red-orange
-ORANGE_H_MAX = 0.153   # ~55° — catches yellow-orange/amber
-ORANGE_S_MIN = 0.40    # must be saturated (not grey) — lowered for compression
-ORANGE_V_MIN = 0.55    # must be reasonably bright — lowered for darker themes
 
 # Known text markers used in Pass 2 OCR-based classification
 _STRENGTH_MARKERS = {"strength ranking", "power", "kills", "donation"}
@@ -95,10 +71,14 @@ def classify_screenshot(
     """
     Classifies a screenshot using Pass 1 colour sampling only.
 
-    This is the fast-path classifier called before any Vision API interaction.
-    It returns a (category, confidence) tuple. If confidence is below
-    CONFIDENCE_THRESHOLD the caller should invoke classify_from_ocr_text()
-    after obtaining OCR results.
+    Iterates over screen definitions in priority order. For each definition
+    that has a pre_ocr_hint, samples the image at the hint position and
+    checks whether the colour matches. On a match:
+      - Single-tab screens (strength, weekly): return the sole tab category.
+      - Multi-tab screens (daily): sample each day-tab position at the
+        definition's tabs.y_hint to find the active day via orange detection.
+        If no day tab registers as orange the image is left unclassified so
+        it falls through to the more reliable Pass 2 brightness comparison.
 
     Args:
         image:    PIL Image of the screenshot to classify.
@@ -109,23 +89,15 @@ def classify_screenshot(
         category is one of: "monday"–"saturday", "weekly", "power", or None.
         confidence is 0.0–1.0.
     """
-    result, confidence = _detect_strength_ranking(image)
-    if result:
-        logger.debug("Pass 1: Strength Ranking detected",
-                     extra={"image_filename": filename, "confidence": confidence})
-        return "power", confidence
-
-    result, confidence = _detect_weekly_rank(image)
-    if result:
-        logger.debug("Pass 1: Weekly Rank detected",
-                     extra={"image_filename": filename, "confidence": confidence})
-        return "weekly", confidence
-
-    day, confidence = _detect_active_day(image)
-    if day:
-        logger.debug("Pass 1: Daily Rank detected",
-                     extra={"image_filename": filename, "day": day, "confidence": confidence})
-        return day, confidence
+    for defn in load_all():
+        category, confidence = _pass1_check_definition(image, defn)
+        if category:
+            logger.debug(
+                "Pass 1: %s detected" % defn.name,
+                extra={"image_filename": filename, "category": category,
+                       "confidence": confidence},
+            )
+            return category, confidence
 
     logger.debug("Pass 1: Classification ambiguous",
                  extra={"image_filename": filename, "confidence": 0.0})
@@ -194,38 +166,90 @@ def classify_from_ocr_text(
 
 
 # ---------------------------------------------------------------------------
-# Pass 1 — blind colour-sampling helpers
+# Pass 1 — definition-driven colour-sampling helpers
 # ---------------------------------------------------------------------------
 
-def _detect_strength_ranking(image: Image.Image) -> tuple[bool, float]:
-    """Samples the Power tab position unique to the Strength Ranking screen."""
-    rgb = sample_color_region(image, x_fraction=STRENGTH_POWER_TAB_X,
-                              y_fraction=TAB_BAR_Y_FRACTION)
-    if is_orange(rgb):
-        return True, 0.90
-    return False, 0.0
-
-
-def _detect_weekly_rank(image: Image.Image) -> tuple[bool, float]:
-    """Samples the right-side Weekly Rank tab position for orange."""
-    rgb = sample_color_region(image, x_fraction=WEEKLY_TAB_X_FRACTION,
-                              y_fraction=TAB_BAR_Y_FRACTION - 0.05)
-    if is_orange(rgb):
-        return True, 0.88
-    return False, 0.0
-
-
-def _detect_active_day(image: Image.Image) -> tuple[Optional[str], float]:
+def _pass1_check_definition(
+    image: Image.Image,
+    defn,
+) -> tuple[Optional[str], float]:
     """
-    Samples each day tab's expected horizontal position for orange background.
-    Used in Pass 1 before OCR text blocks are available.
+    Attempts to classify image against a single screen definition.
+
+    Samples the image at the definition's pre_ocr_hint position and checks
+    whether the colour matches the hint's colour spec using HSV thresholds
+    when provided (falling back to a simple RGB orange check otherwise).
+
+    For single-tab definitions the sole tab category is returned immediately.
+    For multi-tab definitions (daily ranking) each tab's x_hint is sampled
+    at tabs.y_hint; the first tab whose position registers as orange wins.
+    If none register, (None, 0.0) is returned so Pass 2 can handle it.
+
+    Args:
+        image: PIL Image to classify.
+        defn:  ScreenDefinition from the loaded catalog.
+
+    Returns:
+        (category, confidence) or (None, 0.0).
     """
-    for day, x_frac in DAY_TAB_X_POSITIONS.items():
-        rgb = sample_color_region(image, x_fraction=x_frac,
-                                  y_fraction=TAB_BAR_Y_FRACTION)
-        if is_orange(rgb):
-            return day, 0.85
+    hint = defn.pre_ocr_hint
+    if hint is None:
+        return None, 0.0
+
+    rgb = sample_color_region(image, hint.x_hint, hint.y_hint)
+    if not _color_matches(rgb, hint.color):
+        return None, 0.0
+
+    if defn.tabs is None or not defn.tabs.items:
+        return defn.id, hint.confidence
+
+    if len(defn.tabs.items) == 1:
+        return defn.tabs.items[0].category, hint.confidence
+
+    # Multi-tab screen: sample each tab position for orange to find the
+    # active day.  Day tabs use "brightest" strategy for high-accuracy Pass 2
+    # detection; here we use orange as a quick proxy.  If no tab fires we
+    # return (None, 0.0) so the image falls through to OCR-based Pass 2.
+    for tab in defn.tabs.items:
+        tab_rgb = sample_color_region(image, tab.x_hint, defn.tabs.y_hint)
+        if _color_matches(tab_rgb, hint.color):
+            return tab.category, hint.confidence
+
     return None, 0.0
+
+
+def _color_matches(rgb: tuple[int, int, int], color_def) -> bool:
+    """
+    Returns True if an RGB sample matches a ColorDef.
+
+    Uses the definition's HSV override when present (accurate, device-agnostic);
+    falls back to the simple RGB-range orange check in image_utils otherwise.
+
+    Args:
+        rgb:       (R, G, B) sampled pixel values 0–255.
+        color_def: ColorDef from the screen definition, or None.
+
+    Returns:
+        True if the sample colour is an orange active-tab background.
+    """
+    if color_def and color_def.hsv_override:
+        o = color_def.hsv_override
+        return _is_orange_hsv_thresholds(rgb, o.h_min, o.h_max, o.s_min, o.v_min)
+    return is_orange(rgb)
+
+
+def _is_orange_hsv_thresholds(
+    rgb: tuple[int, int, int],
+    h_min: float,
+    h_max: float,
+    s_min: float,
+    v_min: float,
+) -> bool:
+    """HSV orange check using caller-supplied thresholds."""
+    import colorsys as _colorsys
+    r, g, b = rgb
+    h, s, v = _colorsys.rgb_to_hsv(r / 255.0, g / 255.0, b / 255.0)
+    return h_min <= h <= h_max and s >= s_min and v >= v_min
 
 
 # ---------------------------------------------------------------------------
@@ -329,26 +353,6 @@ def _detect_active_day_by_color(
             return None
 
     return best_day
-
-
-def _is_orange_hsv(rgb: tuple[int, int, int]) -> bool:
-    """
-    Returns True if an RGB colour falls within the orange range of the
-    Last War active-tab background using HSV thresholds.
-
-    HSV is used instead of raw RGB because it separates hue (colour identity)
-    from saturation and brightness, making the check robust to lighting
-    variation and compression artefacts across different devices.
-
-    Args:
-        rgb: (R, G, B) tuple with values 0–255.
-
-    Returns:
-        True if the colour is orange (active tab background).
-    """
-    r, g, b = rgb
-    h, s, v = colorsys.rgb_to_hsv(r / 255.0, g / 255.0, b / 255.0)
-    return ORANGE_H_MIN <= h <= ORANGE_H_MAX and s >= ORANGE_S_MIN and v >= ORANGE_V_MIN
 
 
 def _average_rgb(crop: Image.Image) -> tuple[int, int, int]:

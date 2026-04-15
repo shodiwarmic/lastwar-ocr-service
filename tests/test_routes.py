@@ -122,7 +122,7 @@ class TestProcessBatchValidation:
         assert response.status_code == 400
 
     def test_too_many_images_returns_400(self, client):
-        files = [png_file_storage(f"img{i}.png") for i in range(25)]
+        files = [png_file_storage(f"img{i}.png") for i in range(101)]
         response = client.post(
             "/process-batch",
             content_type="multipart/form-data",

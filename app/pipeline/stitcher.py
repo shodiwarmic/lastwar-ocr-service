@@ -32,6 +32,7 @@ from __future__ import annotations
 
 from PIL import Image
 
+from app.pipeline.screen_definitions import get_definition_for_category
 from app.utils.image_utils import crop_top_bottom, get_image_dimensions
 from app.utils.logger import get_logger
 
@@ -149,8 +150,13 @@ def stitch_images_vertically(
         )
         return image_list[0][0]
 
-    top_crop    = TOP_CROP_FRACTIONS.get(category, TOP_CROP_FRACTIONS["default"])
-    bottom_crop = BOTTOM_CROP_FRACTIONS.get(category, BOTTOM_CROP_FRACTIONS["default"])
+    defn = get_definition_for_category(category)
+    if defn:
+        top_crop    = defn.chrome.top_fraction
+        bottom_crop = defn.chrome.bottom_fraction
+    else:
+        top_crop    = TOP_CROP_FRACTIONS.get(category, TOP_CROP_FRACTIONS["default"])
+        bottom_crop = BOTTOM_CROP_FRACTIONS.get(category, BOTTOM_CROP_FRACTIONS["default"])
 
     cropped_images: list[Image.Image] = []
 
