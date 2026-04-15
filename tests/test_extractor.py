@@ -278,21 +278,117 @@ class TestExtractPlayersSynthetic:
         assert players[0].score == 45_635_206
 
 
+# ---------------------------------------------------------------------------
+# Kills screen extraction
+# ---------------------------------------------------------------------------
+
+class TestExtractKills:
+
+    def test_extracts_expected_player_count(self, kills_ranking_blocks):
+        players = extract_players(kills_ranking_blocks, screen_type="kills", image_height=1000)
+        assert len(players) == 8
+
+    def test_top_player_correct(self, kills_ranking_blocks):
+        players = extract_players(kills_ranking_blocks, screen_type="kills", image_height=1000)
+        names = [p.player_name for p in players]
+        scores = {p.player_name: p.score for p in players}
+        assert "Charlie9042" in names
+        assert scores["Charlie9042"] == 17_886_167
+
+    def test_multi_token_name_joined(self, kills_ranking_blocks):
+        players = extract_players(kills_ranking_blocks, screen_type="kills", image_height=1000)
+        names = [p.player_name for p in players]
+        assert "Cloud FF7" in names
+
+    def test_r_badge_stripped(self, kills_ranking_blocks):
+        players = extract_players(kills_ranking_blocks, screen_type="kills", image_height=1000)
+        for p in players:
+            assert not p.player_name.startswith("R"), (
+                f"R-badge not stripped from '{p.player_name}'"
+            )
+
+    def test_scores_positive(self, kills_ranking_blocks):
+        players = extract_players(kills_ranking_blocks, screen_type="kills", image_height=1000)
+        for p in players:
+            assert p.score > 0
+
+
+# ---------------------------------------------------------------------------
+# Donation Daily extraction
+# ---------------------------------------------------------------------------
+
+class TestExtractDonationDaily:
+
+    def test_extracts_expected_player_count(self, donation_daily_blocks):
+        players = extract_players(donation_daily_blocks, screen_type="donation_daily", image_height=1000)
+        assert len(players) == 8
+
+    def test_top_player_correct(self, donation_daily_blocks):
+        players = extract_players(donation_daily_blocks, screen_type="donation_daily", image_height=1000)
+        scores = {p.player_name: p.score for p in players}
+        assert "BlackIce2" in scores
+        assert scores["BlackIce2"] == 14_800
+
+    def test_multi_token_names_joined(self, donation_daily_blocks):
+        players = extract_players(donation_daily_blocks, screen_type="donation_daily", image_height=1000)
+        names = [p.player_name for p in players]
+        assert "Cloud FF7" in names
+        assert "Crazy Carol" in names
+        assert "Davilson Pirani" in names
+        assert "Doc Hollagoon" in names
+
+    def test_scores_above_minimum(self, donation_daily_blocks):
+        players = extract_players(donation_daily_blocks, screen_type="donation_daily", image_height=1000)
+        for p in players:
+            assert p.score >= 1_000
+
+
+# ---------------------------------------------------------------------------
+# Donation Weekly extraction
+# ---------------------------------------------------------------------------
+
+class TestExtractDonationWeekly:
+
+    def test_extracts_expected_player_count(self, donation_weekly_blocks):
+        players = extract_players(donation_weekly_blocks, screen_type="donation_weekly", image_height=1000)
+        assert len(players) == 8
+
+    def test_top_player_correct(self, donation_weekly_blocks):
+        players = extract_players(donation_weekly_blocks, screen_type="donation_weekly", image_height=1000)
+        scores = {p.player_name: p.score for p in players}
+        assert "CaptTrickster727" in scores
+        assert scores["CaptTrickster727"] == 28_300
+
+    def test_multi_token_names_joined(self, donation_weekly_blocks):
+        players = extract_players(donation_weekly_blocks, screen_type="donation_weekly", image_height=1000)
+        names = [p.player_name for p in players]
+        assert "Crazy Carol" in names
+        assert "Davilson Pirani" in names
+        assert "Cloud FF7" in names
+
+    def test_scores_above_minimum(self, donation_weekly_blocks):
+        players = extract_players(donation_weekly_blocks, screen_type="donation_weekly", image_height=1000)
+        for p in players:
+            assert p.score >= 1_000
+
 
 # ---------------------------------------------------------------------------
 # Real fixture extraction tests — auto-discovered
 # ---------------------------------------------------------------------------
 
 _FILENAME_TO_CATEGORY = {
-    "monday":    "monday",
-    "tuesday":   "tuesday",
-    "wednesday": "wednesday",
-    "thursday":  "thursday",
-    "friday":    "friday",
-    "saturday":  "saturday",
-    "weekly":    "weekly",
-    "power":     "power",
-    "strength":  "power",
+    "monday":           "monday",
+    "tuesday":          "tuesday",
+    "wednesday":        "wednesday",
+    "thursday":         "thursday",
+    "friday":           "friday",
+    "saturday":         "saturday",
+    "weekly":           "weekly",
+    "power":            "power",
+    "strength":         "power",
+    "kills":            "kills",
+    "donation_daily":   "donation_daily",
+    "donation_weekly":  "donation_weekly",
 }
 
 

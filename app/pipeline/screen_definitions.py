@@ -332,6 +332,7 @@ def load_all() -> list[ScreenDefinition]:
     return definitions
 
 
+@lru_cache(maxsize=16)
 def get_definition(screen_id: str) -> Optional[ScreenDefinition]:
     """Returns the definition for a specific screen ID, or None if not found."""
     for defn in load_all():

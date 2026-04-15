@@ -1,6 +1,6 @@
 # Last War OCR Service
 
-A Python Flask microservice that accepts **Last War: Survival** ranking screenshots and returns structured player leaderboard data via a JSON API.
+A Python Flask microservice that accepts *Last War: Survival* ranking screenshots and returns structured player leaderboard data via a JSON API.
 
 Designed for deployment on **Google Cloud Run** with **Google Cloud Vision** for OCR. Engineered to stay within or very close to the Vision API free tier (1,000 images/month) via image stitching and result caching.
 
@@ -8,11 +8,44 @@ Designed for deployment on **Google Cloud Run** with **Google Cloud Vision** for
 
 ## Features
 
-- **Three screen types supported:** Daily Rank (Mon–Sat), Weekly Rank, Strength Ranking (Power)
-- **Two-pass classification:** fast colour-sampling pre-filter + OCR-assisted fallback for ambiguous images
-- **Resolution-aware stitching:** groups screenshots by category *and* resolution before OCR to minimise API calls
+- **Seven output categories:** Daily Rank (Mon–Sat), Weekly Rank, Strength Ranking (Power, Kills, Donation Daily, Donation Weekly)
+- **YAML-driven screen definitions:** classification thresholds, tab positions, and row-clustering parameters live in `app/screen_definitions/` — no code changes needed to tune them
+- **Stitch-first pipeline:** groups screenshots by resolution, stitches into a single tall image, runs one Vision API call per group, then splits the result back into per-image sections
+- **Two-pass classification:** fast colour-sampling pre-filter (Pass 1) + OCR-assisted fallback (Pass 2) for ambiguous images
 - **Structured logging:** JSON logs to stdout, automatically captured by Cloud Logging on Cloud Run
-- **Offline test suite:** all classification and extraction logic tested against captured OCR fixtures — Vision API never called during tests
+- **Offline test suite:** classification and extraction logic tested against captured OCR fixtures — Vision API never called during tests
+
+---
+
+## How It Works
+
+```
+POST /process-batch  (up to 100 images)
+        │
+        ▼
+  Load & validate images
+        │
+        ▼
+  prepare_stitched_batches()
+    Group by resolution → stitch vertically with 10 px separators
+    Record Y-range of each source image (ImageRegion)
+        │
+        ▼
+  run_ocr()  ← one Vision API call per stitched group
+        │
+        ▼
+  For each ImageRegion:
+    Filter OCR blocks to region Y-range
+    classify_from_ocr_text(blocks, image=stitched)
+      Pass 1: colour-sample the tab bar using screen definitions
+      Pass 2: OCR text markers + bounding-box colour sampling
+    extract_players(blocks, screen_type, image_height)
+      Score-anchored row clustering (from screen definition)
+      Name cleaning & validation
+        │
+        ▼
+  Merge results by category → return JSON
+```
 
 ---
 
@@ -21,31 +54,40 @@ Designed for deployment on **Google Cloud Run** with **Google Cloud Vision** for
 ```
 lastwar-ocr-service/
 ├── app/
-│   ├── __init__.py              # Flask app factory
-│   ├── routes.py                # /process-batch and /health endpoints
+│   ├── __init__.py              Flask app factory
+│   ├── routes.py                /process-batch and /health endpoints
+│   ├── screen_definitions/      Git submodule — YAML screen definitions
+│   │   ├── catalog.yaml         Ordered list of screens
+│   │   ├── meta-schema.json     JSON Schema for definition files
+│   │   ├── README.md            Schema reference and authoring guide
+│   │   └── screens/
+│   │       ├── daily_ranking.yaml
+│   │       ├── weekly_ranking.yaml
+│   │       └── strength_ranking.yaml
 │   ├── pipeline/
-│   │   ├── classifier.py        # Two-pass screenshot classification
-│   │   ├── stitcher.py          # Image grouping and vertical concatenation
-│   │   ├── ocr_client.py        # Google Cloud Vision wrapper
-│   │   └── extractor.py         # OCR text → structured player data
+│   │   ├── screen_definitions.py  Loads and caches YAML definitions
+│   │   ├── classifier.py          Two-pass screenshot classification
+│   │   ├── stitcher.py            Resolution grouping and vertical stitching
+│   │   ├── ocr_client.py          Google Cloud Vision wrapper
+│   │   └── extractor.py           OCR text → structured player data
 │   ├── models/
-│   │   └── schemas.py           # Pydantic models: PlayerEntry, BatchResult
+│   │   └── schemas.py             Pydantic models: PlayerEntry, BatchResult
 │   └── utils/
-│       ├── logger.py            # Structured JSON logger for Cloud Run
-│       ├── image_utils.py       # PIL helpers
-│       └── text_utils.py        # Regex patterns and string cleaning
+│       ├── logger.py              Structured JSON logger for Cloud Run
+│       ├── image_utils.py         PIL helpers
+│       └── text_utils.py          Regex patterns and string cleaning
 ├── tests/
-│   ├── conftest.py              # Shared fixtures and synthetic block builders
+│   ├── conftest.py                Shared fixtures and synthetic block builders
 │   ├── fixtures/
-│   │   └── ocr_responses/       # Captured Vision API JSON fixtures (git-ignored by default)
+│   │   └── ocr_responses/         Captured Vision API JSON fixtures (git-ignored)
 │   ├── test_classifier.py
 │   ├── test_extractor.py
 │   └── test_routes.py
 ├── tools/
-│   └── capture_ocr_fixture.py  # CLI: capture real OCR responses as test fixtures
+│   └── capture_ocr_fixture.py    CLI: capture real OCR responses as test fixtures
 ├── Dockerfile
 ├── requirements.txt
-└── main.py                      # Gunicorn entrypoint
+└── main.py                        Gunicorn entrypoint
 ```
 
 ---
@@ -54,26 +96,39 @@ lastwar-ocr-service/
 
 ### `POST /process-batch`
 
-Accepts a batch of screenshots and returns extracted player data.
+Accepts a batch of screenshots and returns extracted player data grouped by category.
 
 **Request**
 ```
 Content-Type: multipart/form-data
-Body key: images  (one or more image files, max 20)
+Field:        images  (1–100 image files)
 ```
 
 **Response 200**
 ```json
 {
-  "monday":    [{"player_name": "Charlie9042",   "score": 38686463}],
-  "friday":    [{"player_name": "SirBucksALot", "score": 45635206}],
-  "weekly":    [{"player_name": "SirBucksALot", "score": 161528090}],
-  "power":     [{"player_name": "MOJO DUDE",    "score": 218478394}]
+  "monday":           [{"player_name": "Charlie9042",      "score": 38686463}],
+  "friday":           [{"player_name": "SirBucksALot",     "score": 45635206}],
+  "weekly":           [{"player_name": "SirBucksALot",     "score": 161528090}],
+  "power":            [{"player_name": "MOJO DUDE",        "score": 218478394}],
+  "kills":            [{"player_name": "Charlie9042",      "score": 17886167}],
+  "donation_daily":   [{"player_name": "BlackIce2",        "score": 14800}],
+  "donation_weekly":  [{"player_name": "CaptTrickster727", "score": 28300}]
 }
 ```
+
 Only categories with extracted data are included in the response.
 
-**Response 400** — invalid input  
+| Category | Screen |
+|---|---|
+| `monday`–`saturday` | Daily Rank — VS points for that day |
+| `weekly` | Weekly Rank — 7-day cumulative total |
+| `power` | Strength Ranking — Power tab |
+| `kills` | Strength Ranking — Kills tab |
+| `donation_daily` | Strength Ranking — Donation tab, Daily sub-tab |
+| `donation_weekly` | Strength Ranking — Donation tab, Weekly sub-tab |
+
+**Response 400** — missing or invalid input (no images, too many images, non-image files)  
 **Response 500** — internal processing error
 
 ---
@@ -94,8 +149,8 @@ Cloud Run health check. Returns `{"status": "ok"}` with HTTP 200.
 ### Setup
 
 ```bash
-# Clone and enter the project
-git clone https://github.com/shodiwarmic/lastwar-ocr-service.git
+# Clone with submodules
+git clone --recurse-submodules https://github.com/shodiwarmic/lastwar-ocr-service.git
 cd lastwar-ocr-service
 
 # Create virtual environment
@@ -114,6 +169,11 @@ python main.py
 
 The service will be available at `http://localhost:8080`.
 
+> **Submodule note:** If you cloned without `--recurse-submodules`, initialise it with:
+> ```bash
+> git submodule update --init --recursive
+> ```
+
 ---
 
 ## Capturing Test Fixtures
@@ -131,14 +191,25 @@ python tools/capture_ocr_fixture.py /path/to/screenshot.png
 python tools/capture_ocr_fixture.py /path/to/screenshots/ --dry-run
 ```
 
-Fixtures are saved to `tests/fixtures/ocr_responses/`. The `.gitignore` excludes them by default — remove that exclusion if you want fixtures committed to the repo.
+Fixtures are saved to `tests/fixtures/ocr_responses/`. The filename prefix is used to infer the expected output category — include the category in the screenshot filename before capturing:
+
+| Filename includes | Expected category |
+|---|---|
+| `Monday`, `Tuesday`, … `Saturday` | `monday` … `saturday` |
+| `Weekly` | `weekly` |
+| `Power` or `Strength` | `power` |
+| `Kills` | `kills` |
+| `Donation_Daily` | `donation_daily` |
+| `Donation_Weekly` | `donation_weekly` |
+
+The `.gitignore` excludes fixture files by default — remove that exclusion if you want them committed.
 
 ---
 
 ## Running Tests
 
 ```bash
-# Run all tests (fixture-dependent tests auto-skip if fixtures not yet captured)
+# Run all tests (fixture-dependent tests auto-skip if fixtures not captured yet)
 pytest
 
 # Run with verbose output
@@ -162,15 +233,12 @@ gcloud services enable run.googleapis.com vision.googleapis.com cloudbuild.googl
 
 ### 2. Build and deploy
 ```bash
-# Set your project ID
 export PROJECT_ID=your-gcp-project-id
 export REGION=us-central1
 export SERVICE_NAME=lastwar-ocr-service
 
-# Build container image
 gcloud builds submit --tag gcr.io/$PROJECT_ID/$SERVICE_NAME
 
-# Deploy to Cloud Run
 gcloud run deploy $SERVICE_NAME \
   --image gcr.io/$PROJECT_ID/$SERVICE_NAME \
   --platform managed \
@@ -181,20 +249,16 @@ gcloud run deploy $SERVICE_NAME \
 ```
 
 ### 3. Grant Vision API access
-The Cloud Run service account needs the Vision API User role:
 ```bash
-# Get the service account email
 SA_EMAIL=$(gcloud run services describe $SERVICE_NAME --region $REGION \
   --format="value(spec.template.spec.serviceAccountName)")
 
-# Grant Vision API access
 gcloud projects add-iam-policy-binding $PROJECT_ID \
   --member="serviceAccount:$SA_EMAIL" \
   --role="roles/cloudvision.user"
 ```
 
 ### 4. Set a billing budget alert
-To protect against unexpected Vision API costs:
 ```bash
 # Via Cloud Console: Billing → Budgets & alerts → Create budget
 # Recommended: Alert at $1 spend
@@ -209,33 +273,32 @@ To protect against unexpected Vision API costs:
 | Cloud Run | 2M requests/month, 180K vCPU-seconds | Effectively free for alliance-scale usage |
 | Vision API | 1,000 units/month | ~3–4 units per full batch (with stitching) |
 
-With stitching enabled, a 10-image batch uses ~3–4 Vision API units. The free tier of 1,000 units supports roughly **250–330 full batches per month** before any charges apply.
+With stitching enabled, a 10-image batch uses ~3–4 Vision API units. The free tier supports roughly **250–330 full batches per month** before any charges apply.
 
 ---
 
 ## Troubleshooting
 
-### Classification failures
-Check Cloud Logging for entries with `jsonPayload.ocr_triggered = true`. These indicate images where colour-sampling failed and OCR fallback was used. If the fallback also fails, `jsonPayload.error` will be set.
+**Classification failures** — Check Cloud Logging for `"Pass 2"` log entries, which indicate images where Pass 1 colour-sampling was inconclusive and OCR fallback was used. If both passes fail the entry will have `"OCR classification failed"`.
 
-### OCR quality issues
-- Ensure screenshots are taken at full device resolution (do not resize before uploading)
-- PNG format is preferred over JPEG to avoid compression artefacts on small text
+**OCR quality issues** — Ensure screenshots are taken at full device resolution. PNG is preferred over JPEG to avoid compression artefacts on small text.
 
-### Cold start latency
-Cloud Run containers start cold after periods of inactivity. The Vision API client initialises on the first request (~300ms). Subsequent requests in a warm instance are faster. If cold start latency is unacceptable, consider setting `--min-instances 1` in your Cloud Run deployment (incurs cost).
+**Cold start latency** — The Vision API client initialises on the first request (~300 ms). If cold start latency is unacceptable, set `--min-instances 1` in your Cloud Run deployment (incurs cost).
 
 ---
 
-## Contributing / Extending
+## Extending
+
+### Tuning an existing screen (colour thresholds, tab positions, clustering bands)
+Edit the relevant YAML file in `app/screen_definitions/screens/` and increment its `version`. See [`app/screen_definitions/README.md`](app/screen_definitions/README.md) for the full field reference.
 
 ### Adding a new screen type
-1. Add the new category key to `VALID_CATEGORIES` in `app/models/schemas.py`
-2. Add detection logic to `classifier.py` (both `_detect_*` and `_ocr_detect_*`)
-3. Add crop fractions to `stitcher.py` if the new screen has a different header height
-4. Add test cases to `test_classifier.py` and capture a fixture
+1. Add a YAML definition in `app/screen_definitions/screens/` following the schema
+2. Register it in `app/screen_definitions/catalog.yaml` with an appropriate priority
+3. Capture an OCR fixture with `tools/capture_ocr_fixture.py` and name it to include the new category keyword
+4. Run `pytest` — the new fixture is auto-discovered by all three test files
 
-### Adjusting classification thresholds
-- `CONFIDENCE_THRESHOLD` in `classifier.py` — lower to send more images through OCR fallback
-- `ROW_CLUSTER_Y_TOLERANCE_FRACTION` in `extractor.py` — adjust if rows are being merged or split incorrectly
-- Orange colour thresholds in `image_utils.is_orange()` — adjust if new device screenshots have different UI colours
+No Python code changes are needed for screens that fit the existing classifier strategies (`color_fraction` / `brightest` active-tab detection, `score_anchored` row clustering).
+
+### Adding a new alliance display name to strip
+Add it to `_ALLIANCE_NAME_SUFFIXES` in [`app/utils/text_utils.py`](app/utils/text_utils.py).

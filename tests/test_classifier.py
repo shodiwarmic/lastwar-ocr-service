@@ -106,8 +106,17 @@ class TestOcrDetectActiveDay:
 # ---------------------------------------------------------------------------
 
 class TestClassifyFromOcrText:
+    """
+    Tests for classify_from_ocr_text() without a PIL image.
 
-    def test_classifies_strength_ranking(self, strength_ranking_blocks):
+    In the stitch-first pipeline a real image is always supplied, enabling
+    colour-based tab detection. These tests exercise the OCR text-detection
+    layer only (pass 2 OCR markers).  Strength Ranking tab detection (which
+    tab is active) requires a real image and is covered by TestRealFixtures.
+    """
+
+    def test_classifies_strength_ranking_screen(self, strength_ranking_blocks):
+        """Strength Ranking screen is identified; active tab defaults to 'power' without image."""
         category, confidence = classify_from_ocr_text(strength_ranking_blocks)
         assert category == "power"
         assert confidence >= 0.75
@@ -143,15 +152,18 @@ class TestClassifyFromOcrText:
 
 # Day/screen keywords mapped to expected output category
 _FILENAME_TO_CATEGORY = {
-    "monday":    "monday",
-    "tuesday":   "tuesday",
-    "wednesday": "wednesday",
-    "thursday":  "thursday",
-    "friday":    "friday",
-    "saturday":  "saturday",
-    "weekly":    "weekly",
-    "power":     "power",
-    "strength":  "power",
+    "monday":           "monday",
+    "tuesday":          "tuesday",
+    "wednesday":        "wednesday",
+    "thursday":         "thursday",
+    "friday":           "friday",
+    "saturday":         "saturday",
+    "weekly":           "weekly",
+    "power":            "power",
+    "strength":         "power",
+    "kills":            "kills",
+    "donation_daily":   "donation_daily",
+    "donation_weekly":  "donation_weekly",
 }
 
 

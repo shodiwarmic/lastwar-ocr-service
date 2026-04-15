@@ -77,8 +77,14 @@ def _looks_like_tag(token: str) -> bool:
     """Returns True if a token matches the alliance abbreviation pattern."""
     if not 2 <= len(token) <= 6:
         return False
-    # Must have at least one uppercase letter after position 0
-    return any(c.isupper() for c in token[1:])
+    # Must have at least one uppercase letter after position 0 (internal uppercase,
+    # e.g. "PoWr", "CoRe") AND at least one lowercase letter.  This distinguishes
+    # CamelCase alliance abbreviations from all-caps tokens like "FF7" or "II"
+    # that are legitimate components of player names.
+    return (
+        any(c.isupper() for c in token[1:])
+        and any(c.islower() for c in token)
+    )
 
 
 # Day tab label to output key mapping
