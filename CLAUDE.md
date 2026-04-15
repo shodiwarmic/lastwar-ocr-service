@@ -65,6 +65,10 @@ The classifier reads colour thresholds and tab groupings entirely from the defin
 | `kills` | Strength Ranking — Kills tab |
 | `donation_daily` | Strength Ranking — Donation tab, Daily sub-tab |
 | `donation_weekly` | Strength Ranking — Donation tab, Weekly sub-tab |
+| `mutual_assistance_daily/weekly/season` | Season Contribution — Mutual Assistance tab |
+| `siege_daily/weekly/season` | Season Contribution — Siege tab |
+| `rare_soil_war_daily/weekly/season` | Season Contribution — Rare Soil War tab |
+| `defeat_daily/weekly/season` | Season Contribution — Defeat tab |
 
 ---
 

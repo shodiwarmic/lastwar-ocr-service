@@ -35,6 +35,11 @@ _RBADGE_RE = re.compile(r"\bR[1-5]\b")
 # Score string: digits optionally separated by commas (e.g. "161,528,090")
 _SCORE_RE = re.compile(r"^[\d,]+$")
 
+# Comma-grouped number fragment — used by split_name_score_crash to detect
+# a score embedded at the tail of a merged name+score OCR token.
+# Requires at least one comma group (so bare integers pass through is_numeric_token).
+_COMMA_GROUPED_NUMBER_RE = re.compile(r"\d{1,3}(?:,\d{3})+")
+
 # Stray non-alphanumeric characters that are clearly OCR noise.
 # Keeps spaces, hyphens, underscores, apostrophes, and extended Latin/Cyrillic
 # so accented names like Pàcha are preserved.
@@ -334,6 +339,56 @@ def clean_player_name(raw_name: str) -> str:
     return name
 
 
+def split_name_score_crash(text: str) -> Optional[tuple[str, str]]:
+    """
+    Attempts to split a merged name+score OCR token into (name_prefix, score_str).
+
+    When a player name ends in one or more digits and the score immediately
+    follows with no separating space, Vision API may return them as a single
+    block, e.g. "Ruthless54323,045,000" or "CheeseKillers22,622,000".
+
+    Strategy:
+        Scan right-to-left through the string looking for the rightmost
+        start position where a valid comma-grouped number runs to the end
+        of the string (e.g. "3,045,000") AND the text to the left contains
+        no commas (player names never contain commas; commas only appear in
+        score strings).  The rightmost qualifying start maximises the name
+        prefix and gives the most specific score.
+
+    Only applied to tokens that contain at least one letter — pure numeric
+    tokens are handled by is_numeric_token / parse_score directly.
+
+    Args:
+        text: A single OCR token string, stripped of surrounding whitespace.
+
+    Returns:
+        (name_prefix, score_str) tuple, or None if no embedded score found.
+
+    Examples:
+        split_name_score_crash("Ruthless54323,045,000")  → ("Ruthless5432", "3,045,000")
+        split_name_score_crash("CheeseKillers22,622,000") → ("CheeseKillers2", "2,622,000")
+        split_name_score_crash("Splendiddragon2,552,780") → ("Splendiddragon", "2,552,780")
+        split_name_score_crash("3,045,000")               → None  (pure numeric)
+        split_name_score_crash("ShodiWarmic")             → None  (no score suffix)
+    """
+    if not any(c.isalpha() for c in text):
+        return None  # Pure numeric — handled by is_numeric_token / parse_score
+
+    # Scan right-to-left: find the rightmost position where a valid
+    # comma-grouped number is anchored at the end of the string, with no
+    # comma in the name prefix (commas are score-only in this context).
+    for start in range(len(text) - 1, -1, -1):
+        if not text[start].isdigit():
+            continue
+        candidate = text[start:]
+        if _COMMA_GROUPED_NUMBER_RE.fullmatch(candidate):
+            name_prefix = text[:start].strip()
+            if "," not in name_prefix:
+                return name_prefix, candidate
+
+    return None
+
+
 def is_numeric_token(s: str) -> bool:
     """
     Returns True if a string token represents a pure number (with optional commas).
@@ -380,6 +435,47 @@ def parse_score(raw_score: str) -> Optional[int]:
         return int(cleaned)
     except ValueError:
         return None
+
+
+def all_crash_splits(text: str) -> list[tuple[str, str]]:
+    """
+    Returns every valid (name_prefix, score_str) split for a crash token,
+    ordered by ascending score value (smallest first).
+
+    The first entry matches the rightmost-split heuristic used by
+    split_name_score_crash (i.e. the heuristic result is always index 0).
+    Larger alternatives follow, enabling a caller to try progressively bigger
+    scores until one fits within known monotonicity bounds.
+
+    Returns an empty list for pure-numeric tokens or tokens with no embedded
+    comma-grouped score.
+
+    Examples:
+        all_crash_splits("Ruthless54323,045,000")
+            → [("Ruthless5432", "3,045,000"),
+               ("Ruthless543",  "23,045,000"),
+               ("Ruthless54",   "323,045,000")]
+    """
+    if not any(c.isalpha() for c in text):
+        return []
+
+    results: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    for start in range(len(text) - 1, -1, -1):
+        if not text[start].isdigit():
+            continue
+        candidate = text[start:]
+        if _COMMA_GROUPED_NUMBER_RE.fullmatch(candidate):
+            name_prefix = text[:start].strip()
+            if "," not in name_prefix:
+                entry = (name_prefix, candidate)
+                if entry not in seen:
+                    seen.add(entry)
+                    results.append(entry)
+
+    results.sort(key=lambda x: parse_score(x[1]) or 0)
+    return results
 
 
 def normalize_day_label(raw_label: str) -> Optional[str]:

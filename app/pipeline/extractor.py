@@ -31,13 +31,15 @@ Known edge cases handled:
 
 from __future__ import annotations
 
-from app.models.schemas import PlayerEntry
+from app.models.schemas import PlayerEntry, ScoreCandidate
 from app.pipeline.screen_definitions import RowClusteringConfig, get_definition_for_category
 from app.utils.text_utils import (
+    all_crash_splits,
     clean_player_name,
     is_numeric_token,
     is_ui_label,
     parse_score,
+    split_name_score_crash,
 )
 from app.utils.logger import get_logger
 
@@ -107,8 +109,9 @@ def extract_players(
     # Step 2: Cluster into rows
     rows = build_rows_from_blocks(filtered, image_height, row_config)
 
-    # Step 3-5: Parse, clean, validate
-    players: list[PlayerEntry] = []
+    # Step 3-4: Parse and clean every row; note which rows involved a crash split
+    # so we can validate them against their neighbours in the next pass.
+    _pre: list[dict] = []  # {"name": str, "score": int, "crash_text": str | None}
     for row in rows:
         result = parse_player_row(row, image_width=image_width, row_config=row_config)
         if result is None:
@@ -121,8 +124,75 @@ def extract_players(
         if not is_valid_player_row(clean_name, score, min_score=row_config.min_score):
             continue
 
+        # Identify the crash block in this row, if any, for use in pass 2.
+        crash_text = next(
+            (b["text"] for b in reversed(row) if split_name_score_crash(b["text"])),
+            None,
+        )
+        all_splits = all_crash_splits(crash_text) if crash_text else []
+        _pre.append({"name": clean_name, "score": score, "crash_text": crash_text, "all_splits": all_splits})
+
+    # Step 5: Validate crash rows using adjacent scores as monotonicity bounds.
+    #
+    # The leaderboard is sorted highest-to-lowest, so every score must satisfy:
+    #     score[i-1] >= score[i] >= score[i+1]
+    #
+    # For a crash row whose heuristic score falls outside that window, we try
+    # progressively larger alternative splits (ascending score order) until one
+    # fits.  When no neighbour exists (rank 1 has no row above; the last visible
+    # row has no row below) only the available single bound is enforced.
+    players: list[PlayerEntry] = []
+    for i, entry in enumerate(_pre):
+        name       = entry["name"]
+        score      = entry["score"]
+        all_splits = entry["all_splits"]
+
+        # Build candidates list for any crash row that has genuine ambiguity
+        # (two or more valid splits).  Ordered smallest score first so
+        # candidates[0] always matches the heuristic top-level name/score.
+        candidates: list[ScoreCandidate] | None = None
+        if len(all_splits) > 1:
+            candidates = [
+                ScoreCandidate(player_name=clean_player_name(p), score=parse_score(s))
+                for p, s in all_splits
+                if is_valid_player_row(clean_player_name(p), parse_score(s), min_score=row_config.min_score)
+            ]
+            if len(candidates) < 2:
+                candidates = None  # collapsed to one valid option — unambiguous
+
+        if entry["crash_text"]:
+            upper = _pre[i - 1]["score"] if i > 0            else None
+            lower = _pre[i + 1]["score"] if i < len(_pre) - 1 else None
+
+            fits = (upper is None or score <= upper) and (lower is None or score >= lower)
+
+            if not fits:
+                for alt_prefix, alt_score_str in all_splits:
+                    alt_score = parse_score(alt_score_str)
+                    alt_name  = clean_player_name(alt_prefix)
+                    if not is_valid_player_row(alt_name, alt_score, min_score=row_config.min_score):
+                        continue
+                    alt_fits = (
+                        (upper is None or alt_score <= upper)
+                        and (lower is None or alt_score >= lower)
+                    )
+                    if alt_fits:
+                        logger.debug(
+                            "Crash split corrected via adjacent-score bounds",
+                            extra={
+                                "original_name":  name,
+                                "original_score": score,
+                                "corrected_name":  alt_name,
+                                "corrected_score": alt_score,
+                                "upper_bound": upper,
+                                "lower_bound": lower,
+                            },
+                        )
+                        name, score = alt_name, alt_score
+                        break
+
         try:
-            players.append(PlayerEntry(player_name=clean_name, score=score))
+            players.append(PlayerEntry(player_name=name, score=score, candidates=candidates))
         except Exception:
             # Pydantic validation failed — skip this row
             continue
@@ -206,10 +276,26 @@ def build_rows_from_blocks(
 
 
 def _is_score_block(block: dict, min_score: int = MIN_VALID_SCORE) -> bool:
-    """Returns True if a block looks like a player score (numeric >= min_score)."""
-    from app.utils.text_utils import parse_score
-    val = parse_score(block["text"])
-    return val is not None and val >= min_score
+    """
+    Returns True if a block contains a player score >= min_score.
+
+    Handles two cases:
+    1. Pure numeric token (e.g. "3,045,000") — direct parse_score check.
+    2. Crash token (e.g. "Ruthless54323,045,000") — name+score merged into
+       one block when OCR sees no gap between a digit-ending name and the
+       score.  split_name_score_crash extracts the embedded score.
+    """
+    text = block["text"]
+    val = parse_score(text)
+    if val is not None and val >= min_score:
+        return True
+    split = split_name_score_crash(text)
+    if split:
+        _, score_str = split
+        val = parse_score(score_str)
+        if val is not None and val >= min_score:
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -261,25 +347,45 @@ def parse_player_row(
         if image_width else row_config.min_word_gap_px * 2
     )
 
-    # Find the rightmost numeric token and its left edge X position
-    score_index = None
-    score_left_x = None
+    # Find the rightmost numeric token and its left edge X position.
+    # Pass 1: pure numeric token (the normal case).
+    score_index   = None
+    raw_score     = None
+    score_left_x  = None
+    crash_name_prefix: Optional[str] = None
+
     for i in range(len(row_blocks) - 1, -1, -1):
         if is_numeric_token(row_blocks[i]["text"]):
-            score_index = i
+            score_index  = i
+            raw_score    = row_blocks[i]["text"]
             score_left_x = _block_left_x(row_blocks[i])
             break
+
+    # Pass 2: crash-token fallback — name+score merged into one block.
+    # e.g. "Ruthless54323,045,000" → name_prefix="Ruthless5432", score="3,045,000"
+    if score_index is None:
+        for i in range(len(row_blocks) - 1, -1, -1):
+            split = split_name_score_crash(row_blocks[i]["text"])
+            if split:
+                crash_name_prefix, raw_score = split
+                score_index  = i
+                score_left_x = _block_left_x(row_blocks[i])
+                break
 
     if score_index is None:
         return None
 
-    raw_score = row_blocks[score_index]["text"]
-
-    # Collect name blocks: must be LEFT of the score token
+    # Collect name blocks that are spatially LEFT of the score token.
     name_blocks = [
         b for b in row_blocks[:score_index]
         if score_left_x is None or _block_right_x(b) <= score_left_x
     ]
+
+    # For crash tokens, the name prefix extracted from the merged block is
+    # appended as a virtual block so it participates in the name string.
+    # It carries no bbox, so the gap check falls back to inserting a space.
+    if crash_name_prefix is not None:
+        name_blocks.append({"text": crash_name_prefix, "avg_x": score_left_x or 0})
 
     if not name_blocks:
         return None

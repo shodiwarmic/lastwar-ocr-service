@@ -32,7 +32,7 @@ import hashlib
 
 from flask import Blueprint, jsonify, request
 
-from app.models.schemas import BatchResult, PlayerEntry
+from app.models.schemas import BatchResult, PlayerEntry, VALID_CATEGORIES
 from app.pipeline.classifier import classify_from_ocr_text
 from app.pipeline.extractor import extract_players
 from app.pipeline.ocr_client import extract_text_blocks, run_ocr
@@ -71,7 +71,14 @@ def process_batch():
     if len(files) > MAX_IMAGES_PER_BATCH:
         return jsonify({"error": f"Too many images. Maximum {MAX_IMAGES_PER_BATCH} per batch."}), 400
 
-    logger.info("Batch received", extra={"image_count": len(files)})
+    # Optional caller-supplied category — bypasses classification entirely.
+    # Required for screens where auto-detection is not used (e.g. alliance
+    # contribution tabs: mutual_assistance, siege, rare_soil_war, defeat).
+    category_override: str | None = request.form.get("category", "").strip() or None
+    if category_override is not None and category_override not in VALID_CATEGORIES:
+        return jsonify({"error": f"Unknown category '{category_override}'. Valid values: {sorted(VALID_CATEGORIES)}"}), 400
+
+    logger.info("Batch received", extra={"image_count": len(files), "category_override": category_override})
 
     # ------------------------------------------------------------------ #
     # 2. Load images
@@ -135,11 +142,15 @@ def process_batch():
                 )
                 continue
 
-            category, confidence = classify_from_ocr_text(
-                section_blocks,
-                image=stitched_image,
-                filename=region.filename,
-            )
+            if category_override is not None:
+                category   = category_override
+                confidence = 1.0
+            else:
+                category, confidence = classify_from_ocr_text(
+                    section_blocks,
+                    image=stitched_image,
+                    filename=region.filename,
+                )
 
             if category is None:
                 logger.warning(
