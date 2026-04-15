@@ -136,9 +136,18 @@ class TestProcessBatchValidation:
 # Successful processing (mocked OCR)
 # ---------------------------------------------------------------------------
 
+@pytest.fixture(autouse=True)
+def clear_route_cache():
+    """Clear the in-memory result cache before and after each test."""
+    import app.routes as routes_module
+    routes_module._result_cache.clear()
+    yield
+    routes_module._result_cache.clear()
+
+
 class TestProcessBatchMocked:
 
-    @patch("app.routes.classify_screenshot")
+    @patch("app.routes.classify_from_ocr_text")
     @patch("app.routes.run_ocr")
     @patch("app.routes.extract_text_blocks")
     @patch("app.routes.extract_players")
@@ -154,7 +163,7 @@ class TestProcessBatchMocked:
 
         mock_classify.return_value = ("friday", 0.95)
         mock_ocr.return_value = (MagicMock(), "hash_abc")
-        mock_text_blocks.return_value = []
+        mock_text_blocks.return_value = [{"text": "x", "bbox": {}, "avg_x": 100.0, "avg_y": 1200.0}]
         mock_extract.return_value = [
             PlayerEntry(player_name="SirBucksALot", score=45_635_206)
         ]
@@ -171,7 +180,7 @@ class TestProcessBatchMocked:
         assert data["friday"][0]["player_name"] == "SirBucksALot"
         assert data["friday"][0]["score"] == 45_635_206
 
-    @patch("app.routes.classify_screenshot")
+    @patch("app.routes.classify_from_ocr_text")
     @patch("app.routes.run_ocr")
     @patch("app.routes.extract_text_blocks")
     @patch("app.routes.extract_players")
@@ -185,7 +194,7 @@ class TestProcessBatchMocked:
     ):
         mock_classify.return_value = ("friday", 0.95)
         mock_ocr.return_value = (MagicMock(), "hash_xyz")
-        mock_text_blocks.return_value = []
+        mock_text_blocks.return_value = [{"text": "x", "bbox": {}, "avg_x": 100.0, "avg_y": 1200.0}]
         mock_extract.return_value = []
 
         response = client.post(
@@ -198,7 +207,7 @@ class TestProcessBatchMocked:
         data = response.get_json()
         assert "warning" in data
 
-    @patch("app.routes.classify_screenshot")
+    @patch("app.routes.classify_from_ocr_text")
     @patch("app.routes.run_ocr")
     @patch("app.routes.extract_text_blocks")
     @patch("app.routes.extract_players")
@@ -214,7 +223,7 @@ class TestProcessBatchMocked:
 
         call_count = 0
 
-        def classify_side_effect(image, filename=""):
+        def classify_side_effect(text_blocks, image=None, filename=""):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -228,7 +237,10 @@ class TestProcessBatchMocked:
 
         mock_classify.side_effect = classify_side_effect
         mock_ocr.return_value = (MagicMock(), "hash_multi")
-        mock_text_blocks.return_value = []
+        mock_text_blocks.return_value = [
+            {"text": "d1", "bbox": {}, "avg_x": 100.0, "avg_y": 1200.0},
+            {"text": "d2", "bbox": {}, "avg_x": 100.0, "avg_y": 3610.0},
+        ]
         mock_extract.side_effect = extract_side_effect
 
         response = client.post(

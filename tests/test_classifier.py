@@ -20,7 +20,6 @@ import pytest
 from pathlib import Path
 
 from app.pipeline.classifier import (
-    CONFIDENCE_THRESHOLD,
     classify_from_ocr_text,
     _ocr_detect_strength,
     _ocr_detect_weekly,

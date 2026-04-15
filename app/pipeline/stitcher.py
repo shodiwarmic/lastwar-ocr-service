@@ -1,248 +1,196 @@
 """
 app/pipeline/stitcher.py
 
-Groups classified screenshots by category and resolution, then stitches
-each group into a single tall image before OCR.
+Groups screenshots by resolution, stitches each group into one tall image
+with black separator bands, and recursively splits any group that would
+exceed Vision API size limits.
 
-Why stitching matters:
-    The Vision API bills per image submitted. Stitching 5 screenshots of the
-    same day into one image costs 1 unit instead of 5. For an alliance
-    submitting a full week of daily + weekly + power screenshots (~10 images),
-    stitching reduces Vision API calls from 10 to ~3-4, keeping usage well
-    within the free tier.
+Design:
+    The stitch-first pipeline skips pre-OCR classification.  Every uploaded
+    image goes directly into a resolution group; images of the same size are
+    stitched into one tall image and sent as a single Vision API call.
+    Classification and player extraction happen per section after OCR,
+    using only the text blocks whose bounding-box Y falls within each source
+    image's slice of the stitched output.
 
-Resolution grouping:
-    Images are grouped by (category, width, height) so only identically-sized
-    screenshots are concatenated. This avoids distortion and OCR errors that
-    would result from resizing images before stitching. In the rare case that
-    a batch contains screenshots from two different devices, each resolution
-    produces its own stitched image and the extracted results are merged.
+Separator bands:
+    A SEPARATOR_HEIGHT-pixel black band is pasted between each source image.
+    This creates a clean visual boundary: no OCR word can have a bounding box
+    that spans the separator, so per-section block filtering by Y range is clean.
 
-Chrome removal:
-    Before stitching, each image has its top navigation bar and bottom
-    self-player row cropped out. These UI elements are identical across
-    screenshots and would confuse the extractor if duplicated repeatedly
-    in a tall stitched image (e.g. "Commander Points" column headers
-    appearing 5 times). The first image in a group retains its header
-    and the last image retains its footer so the stitched image still has
-    complete context at the top and bottom.
+API limit handling:
+    Vision API rejects payloads > 20 MB (JPEG-encoded) or > 75 megapixels.
+    _split_until_within_limits() recursively bisects oversized groups until
+    every sub-batch fits, degrading gracefully to one call per image if needed.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from PIL import Image
 
-from app.pipeline.screen_definitions import get_definition_for_category
-from app.utils.image_utils import crop_top_bottom, get_image_dimensions
+from app.utils.image_utils import pil_to_bytes
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# ---------------------------------------------------------------------------
-# Chrome crop fractions per screen type
-# Tuned against sample screenshots — adjust if layouts change.
-# ---------------------------------------------------------------------------
+# Black separator band inserted between source images in the stitched output.
+SEPARATOR_HEIGHT = 10  # pixels
 
-# Fraction of image height to remove from the TOP (navigation/tab bar area)
-TOP_CROP_FRACTIONS = {
-    "power":   0.22,   # Strength Ranking has a taller header with 3 tabs
-    "weekly":  0.18,   # Weekly Rank header with 2 tabs
-    "default": 0.22,   # Daily Rank header with 2 tabs + 6 day tabs
-}
+# Vision API hard limits
+_MAX_BYTES      = 20 * 1024 * 1024   # 20 MB encoded JPEG
+_MAX_MEGAPIXELS = 75_000_000         # 75 MP uncompressed
 
-# Fraction of image height to remove from the BOTTOM (self-player highlight row)
-BOTTOM_CROP_FRACTIONS = {
-    "power":   0.12,
-    "weekly":  0.12,
-    "default": 0.12,
-}
+
+@dataclass
+class ImageRegion:
+    """
+    Y-coordinate slice of one source image within a stitched batch.
+
+    After OCR, text blocks with avg_y in [y_start, y_end) belong to this
+    source image and are classified and player-extracted independently.
+
+    Attributes:
+        filename: Original upload filename, used for logging and classification.
+        y_start:  Top edge of this image's slice in the stitched output (px).
+        y_end:    Bottom edge (exclusive) — equal to y_start + source image height.
+    """
+    filename: str
+    y_start:  int
+    y_end:    int
 
 
 # ---------------------------------------------------------------------------
 # Public interface
 # ---------------------------------------------------------------------------
 
-def group_images_by_category_and_resolution(
-    classified_images: list[tuple[Image.Image, str, str]],
-) -> dict[tuple[str, int, int], list[tuple[Image.Image, str]]]:
-    """
-    Groups classified images by (category, width, height).
-
-    Using resolution as a secondary key ensures only identically-sized images
-    are stitched together, preventing width mismatches and OCR quality issues
-    that would result from concatenating images of different resolutions.
-
-    Args:
-        classified_images: List of (pil_image, category, filename) tuples.
-                           category is one of the VALID_CATEGORIES strings.
-
-    Returns:
-        Dict mapping (category, width, height) → list of (pil_image, filename).
-
-    Example:
-        {
-            ("friday",  1080, 2400): [(img1, "8851.png"), (img2, "8836.png")],
-            ("power",   1080, 2400): [(img3, "8725.png")],
-            ("weekly",  1284, 2778): [(img4, "extra.png")],
-        }
-    """
-    groups: dict[tuple[str, int, int], list[tuple[Image.Image, str]]] = {}
-
-    for image, category, filename in classified_images:
-        if category is None:
-            logger.warning(
-                "Skipping image with no category",
-                extra={"image_filename": filename},
-            )
-            continue
-
-        w, h = get_image_dimensions(image)
-        key = (category, w, h)
-
-        if key not in groups:
-            groups[key] = []
-        groups[key].append((image, filename))
-
-    # Log grouping summary
-    for (cat, w, h), items in groups.items():
-        logger.info(
-            "Image group formed",
-            extra={
-                "category": cat,
-                "resolution": f"{w}x{h}",
-                "image_count": len(items),
-                "filenames": [f for _, f in items],
-            },
-        )
-
-    return groups
-
-
-def stitch_images_vertically(
-    image_list: list[tuple[Image.Image, str]],
-    category: str,
-) -> Image.Image:
-    """
-    Concatenates a list of images into a single tall stitched image.
-
-    Chrome removal strategy:
-    - First image:  keep header (top chrome), remove bottom chrome
-    - Middle images: remove both top and bottom chrome
-    - Last image:   remove top chrome, keep footer (bottom chrome)
-    - Single image: no cropping applied (nothing to de-duplicate)
-
-    All images in the list are guaranteed to have the same width by the
-    grouping step, so no width validation is needed here.
-
-    Args:
-        image_list: List of (pil_image, filename) tuples in the order they
-                    should appear top-to-bottom in the stitched output.
-        category:   The category string, used to select the correct crop fractions.
-
-    Returns:
-        A single PIL Image containing all input images concatenated vertically
-        with duplicated UI chrome removed from interior boundaries.
-    """
-    if len(image_list) == 1:
-        logger.debug(
-            "Single image — no stitching required",
-            extra={"image_filename": image_list[0][1], "category": category},
-        )
-        return image_list[0][0]
-
-    defn = get_definition_for_category(category)
-    if defn:
-        top_crop    = defn.chrome.top_fraction
-        bottom_crop = defn.chrome.bottom_fraction
-    else:
-        top_crop    = TOP_CROP_FRACTIONS.get(category, TOP_CROP_FRACTIONS["default"])
-        bottom_crop = BOTTOM_CROP_FRACTIONS.get(category, BOTTOM_CROP_FRACTIONS["default"])
-
-    cropped_images: list[Image.Image] = []
-
-    for i, (img, filename) in enumerate(image_list):
-        is_first = i == 0
-        is_last  = i == len(image_list) - 1
-
-        if is_first and is_last:
-            # Should not reach here (handled above) but be safe
-            cropped_images.append(img)
-        elif is_first:
-            # Keep header, remove footer
-            cropped = crop_top_bottom(img, top_fraction=0.0, bottom_fraction=bottom_crop)
-            cropped_images.append(cropped)
-        elif is_last:
-            # Remove header, keep footer
-            cropped = crop_top_bottom(img, top_fraction=top_crop, bottom_fraction=0.0)
-            cropped_images.append(cropped)
-        else:
-            # Interior image — remove both header and footer
-            cropped = crop_top_bottom(img, top_fraction=top_crop, bottom_fraction=bottom_crop)
-            cropped_images.append(cropped)
-
-        logger.debug(
-            "Cropped image for stitching",
-            extra={
-                "image_filename": filename,
-                "position": "first" if is_first else "last" if is_last else "middle",
-                "original_size": f"{img.width}x{img.height}",
-                "cropped_size": f"{cropped_images[-1].width}x{cropped_images[-1].height}",
-            },
-        )
-
-    total_height = sum(img.height for img in cropped_images)
-    width = cropped_images[0].width
-
-    stitched = Image.new("RGB", (width, total_height))
-    y_offset = 0
-    for img in cropped_images:
-        stitched.paste(img, (0, y_offset))
-        y_offset += img.height
-
-    logger.info(
-        "Stitching complete",
-        extra={
-            "category": category,
-            "input_count": len(image_list),
-            "stitched_size": f"{width}x{total_height}",
-        },
-    )
-
-    return stitched
-
-
 def prepare_stitched_batches(
-    classified_images: list[tuple[Image.Image, str, str]],
-) -> list[tuple[Image.Image, str]]:
+    images: list[tuple[Image.Image, str]],
+) -> list[tuple[Image.Image, list[ImageRegion]]]:
     """
-    Full preparation pipeline: group → stitch → return list ready for OCR.
+    Groups images by resolution, stitches each group, splits if oversized.
 
-    This is the primary entry point called by the route handler. It combines
-    grouping and stitching into a single call and returns a flat list of
-    (stitched_image, category) tuples — one per resolution group — ready
-    to be passed directly to the OCR client.
+    This is the sole stitcher entry point called by the route handler.
 
     Args:
-        classified_images: List of (pil_image, category, filename) tuples
-                           from the classification step.
+        images: (pil_image, filename) pairs in submission order.
 
     Returns:
-        List of (stitched_pil_image, category) tuples. Each tuple represents
-        one Vision API call.
+        List of (stitched_image, [ImageRegion, ...]) tuples — one per Vision
+        API call.  ImageRegion.y_start / y_end delimit each source image's
+        pixel rows within the stitched output.
     """
-    groups = group_images_by_category_and_resolution(classified_images)
-    result: list[tuple[Image.Image, str]] = []
+    groups: dict[tuple[int, int], list[tuple[Image.Image, str]]] = {}
+    for img, filename in images:
+        key = (img.width, img.height)
+        groups.setdefault(key, []).append((img, filename))
 
-    for (category, w, h), image_list in groups.items():
-        stitched = stitch_images_vertically(image_list, category)
-        result.append((stitched, category))
+    for (w, h), items in groups.items():
+        logger.info(
+            "Resolution group formed",
+            extra={
+                "resolution":  f"{w}x{h}",
+                "image_count": len(items),
+                "filenames":   [f for _, f in items],
+            },
+        )
+
+    batches: list[tuple[Image.Image, list[ImageRegion]]] = []
+    for image_list in groups.values():
+        batches.extend(_split_until_within_limits(image_list))
 
     logger.info(
         "Batch preparation complete",
         extra={
-            "total_input_images": len(classified_images),
-            "total_ocr_calls_needed": len(result),
+            "total_input_images":     len(images),
+            "total_ocr_calls_needed": len(batches),
         },
     )
 
-    return result
+    return batches
+
+
+# ---------------------------------------------------------------------------
+# Private helpers
+# ---------------------------------------------------------------------------
+
+def _stitch_with_separators(
+    image_list: list[tuple[Image.Image, str]],
+) -> tuple[Image.Image, list[ImageRegion]]:
+    """
+    Concatenates images vertically with SEPARATOR_HEIGHT-pixel black bands.
+
+    Returns the stitched PIL image and the ImageRegion list that records
+    each source image's Y slice within it.
+    """
+    width = image_list[0][0].width
+    n     = len(image_list)
+
+    total_h  = sum(img.height for img, _ in image_list) + SEPARATOR_HEIGHT * (n - 1)
+    stitched = Image.new("RGB", (width, total_h), color=(0, 0, 0))
+
+    regions:  list[ImageRegion] = []
+    y_offset = 0
+
+    for i, (img, filename) in enumerate(image_list):
+        y_start = y_offset
+        stitched.paste(img, (0, y_offset))
+        y_offset += img.height
+        regions.append(ImageRegion(filename=filename, y_start=y_start, y_end=y_offset))
+        if i < n - 1:
+            y_offset += SEPARATOR_HEIGHT   # advance past separator band
+
+    logger.debug(
+        "Stitched images with separators",
+        extra={
+            "image_count":   n,
+            "stitched_size": f"{width}x{total_h}",
+            "filenames":     [f for _, f in image_list],
+        },
+    )
+
+    return stitched, regions
+
+
+def _within_api_limits(image: Image.Image) -> bool:
+    """Returns True if the image fits within Vision API pixel and byte limits."""
+    if image.width * image.height > _MAX_MEGAPIXELS:
+        return False
+    jpeg_bytes = pil_to_bytes(image, fmt="JPEG")
+    return len(jpeg_bytes) <= _MAX_BYTES
+
+
+def _split_until_within_limits(
+    image_list: list[tuple[Image.Image, str]],
+) -> list[tuple[Image.Image, list[ImageRegion]]]:
+    """
+    Recursively bisects image_list until every sub-batch fits API limits.
+
+    Base cases:
+        - Single image: returned as-is (cannot split further).
+        - Stitched batch within limits: returned directly.
+    Recursive case:
+        Bisect at midpoint; recurse on both halves independently.
+    """
+    if not image_list:
+        return []
+
+    stitched, regions = _stitch_with_separators(image_list)
+
+    if _within_api_limits(stitched) or len(image_list) == 1:
+        return [(stitched, regions)]
+
+    mid   = len(image_list) // 2
+    left  = _split_until_within_limits(image_list[:mid])
+    right = _split_until_within_limits(image_list[mid:])
+
+    logger.info(
+        "Split stitched batch to stay within API limits",
+        extra={
+            "original_count": len(image_list),
+            "split_into":     len(left) + len(right),
+        },
+    )
+
+    return left + right
