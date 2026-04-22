@@ -179,9 +179,12 @@ def weekly_rank_blocks():
 
 
 @pytest.fixture()
-def strength_ranking_blocks():
+def strength_metrics_blocks():
     """
-    Synthetic OCR blocks representing a Strength Ranking screen.
+    Synthetic OCR blocks representing a Strength Ranking screen with the
+    Power row-1 tab active. No Daily / Weekly sub-tabs visible — those
+    only render when the Donation row-1 tab is active (see
+    `strength_donation_blocks`).
     """
     return [
         make_block("STRENGTH",      250,  80),
@@ -192,6 +195,27 @@ def strength_ranking_blocks():
         make_block("Ranking",        80, 290),
         make_block("Commander",     300, 290),
         make_block("Power",         550, 290),
+    ]
+
+
+@pytest.fixture()
+def strength_donation_blocks():
+    """
+    Synthetic OCR blocks representing a Strength Ranking screen with the
+    Donation row-1 tab active. The sub-tab row (Daily | Weekly) is
+    visible — this is what `strength_donation.yaml` is designed to match.
+    """
+    return [
+        make_block("STRENGTH",      250,  80),
+        make_block("RANKING",       370,  80),
+        make_block("Power",         120, 200),
+        make_block("Kills",         300, 200),
+        make_block("Donation",      490, 200),
+        make_block("Daily",         150, 250),
+        make_block("Weekly",        320, 250),
+        make_block("Ranking",        80, 320),
+        make_block("Commander",     300, 320),
+        make_block("Points",        550, 320),
     ]
 
 

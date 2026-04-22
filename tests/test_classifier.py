@@ -34,15 +34,18 @@ from tests.conftest import FIXTURE_DIR, get_text_blocks, load_fixture, make_bloc
 
 class TestOcrDetectStrength:
 
-    def test_detects_strength_ranking_header(self, strength_ranking_blocks):
-        all_lower = {b["text"].strip().lower() for b in strength_ranking_blocks}
+    def test_detects_metrics_screen_header(self, strength_metrics_blocks):
+        """Power/Kills variant matches via the broad 'Strength Ranking' page_signal."""
+        all_lower = {b["text"].strip().lower() for b in strength_metrics_blocks}
         assert _ocr_detect_strength(all_lower) is True
 
-    def test_detects_via_power_kills_donation(self):
-        blocks = {"power", "kills", "donation", "ranking", "commander"}
-        assert _ocr_detect_strength(blocks) is True
+    def test_detects_donation_screen_via_sub_tab_signals(self, strength_donation_blocks):
+        """Donation variant matches via the 'Strength Daily Weekly' multi-word page_signal."""
+        all_lower = {b["text"].strip().lower() for b in strength_donation_blocks}
+        assert _ocr_detect_strength(all_lower) is True
 
-    def test_requires_both_power_and_kills(self):
+    def test_rejects_power_alone(self):
+        """Just 'power' + 'ranking' lacks the 'strength' token; no variant matches."""
         assert _ocr_detect_strength({"power", "ranking"}) is False
 
     def test_weekly_rank_not_detected_as_strength(self, weekly_rank_blocks):
@@ -64,8 +67,15 @@ class TestOcrDetectWeekly:
         all_lower = {b["text"].strip().lower() for b in friday_daily_blocks}
         assert _ocr_detect_weekly(all_lower) is False
 
-    def test_does_not_detect_strength_as_weekly(self, strength_ranking_blocks):
-        all_lower = {b["text"].strip().lower() for b in strength_ranking_blocks}
+    def test_does_not_detect_strength_metrics_as_weekly(self, strength_metrics_blocks):
+        all_lower = {b["text"].strip().lower() for b in strength_metrics_blocks}
+        assert _ocr_detect_weekly(all_lower) is False
+
+    def test_does_not_detect_strength_donation_as_weekly(self, strength_donation_blocks):
+        """Donation variant has 'Weekly' as a sub-tab label; ensure weekly_ranking
+        doesn't latch onto it (its 'Mon.'-'Sat.' negatives don't cover this case,
+        but 'Weekly Rank' as the page_signal requires both words)."""
+        all_lower = {b["text"].strip().lower() for b in strength_donation_blocks}
         assert _ocr_detect_weekly(all_lower) is False
 
 
@@ -115,9 +125,9 @@ class TestClassifyFromOcrText:
     tab is active) requires a real image and is covered by TestRealFixtures.
     """
 
-    def test_classifies_strength_ranking_screen(self, strength_ranking_blocks):
-        """Strength Ranking screen is identified; active tab defaults to 'power' without image."""
-        category, confidence = classify_from_ocr_text(strength_ranking_blocks)
+    def test_classifies_strength_metrics_screen(self, strength_metrics_blocks):
+        """Strength Metrics screen is identified; active tab defaults to 'power' without image."""
+        category, confidence = classify_from_ocr_text(strength_metrics_blocks)
         assert category == "power"
         assert confidence >= 0.75
 

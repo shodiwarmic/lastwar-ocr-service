@@ -361,25 +361,38 @@ def _detect_active_strength_tab(
     text_blocks: list[dict],
 ) -> Optional[str]:
     """
-    Identifies the active Strength Ranking tab using OCR bounding boxes and
-    colour sampling, driven entirely by the strength_ranking screen definition.
+    Identifies the active Strength Ranking tab.
 
-    Strategy:
-        1. Build tab groups from the definition: each unique first signal becomes
-           a top-level tab label (e.g. "power", "kills", "donation").
-        2. Find the topmost OCR block for each top-level label and sample its
-           background colour. The active tab has an orange background.
-        3. For groups with multiple tabs (e.g. donation_daily / donation_weekly),
-           detect the active sub-tab by comparing background brightness — the
-           active sub-tab has a brighter (whiter) background.
+    Strength Ranking is split into two definitions: `strength_donation`
+    (Daily / Weekly sub-tabs visible) and `strength_metrics` (Power / Kills
+    only). We try strength_donation first because its more-specific tab
+    items only match when the Donation sub-tab row is rendered; if no
+    sub-tab tab fires, fall through to strength_metrics for Power / Kills.
+    """
+    for screen_id in _STRENGTH_SCREEN_IDS:
+        defn = get_definition(screen_id)
+        if defn is None or not defn.tabs:
+            continue
+        category = _detect_active_tab_in_definition(image, text_blocks, defn)
+        if category is not None:
+            return category
+    return None
+
+
+def _detect_active_tab_in_definition(
+    image: Image.Image,
+    text_blocks: list[dict],
+    defn,
+) -> Optional[str]:
+    """
+    Identifies the active tab inside a single Strength-style definition by
+    locating each tab item's signal text in the OCR blocks, sampling the
+    surrounding region for orange, and (when a top-level signal maps to
+    multiple sub-tabs) selecting the active sub-tab by brightness.
 
     All colour thresholds and padding are read from the definition so that
     tuning the YAML is the only change needed.
     """
-    defn = get_definition("strength_ranking")
-    if defn is None or not defn.tabs:
-        return None
-
     img_w, img_h = image.size
     ai  = defn.tabs.active_indicator
     pad = max(4, round(img_w * ai.bbox_padding_fraction))
@@ -593,30 +606,37 @@ def _bbox_to_pixel_coords(bbox) -> tuple:
 # Pass 2 — OCR text helpers
 # ---------------------------------------------------------------------------
 
+_STRENGTH_SCREEN_IDS = ("strength_donation", "strength_metrics")
+
+
 def _ocr_detect_strength(all_text_lower: set[str]) -> bool:
     """
-    Returns True if Strength Ranking markers are present in the OCR text set.
+    Returns True if any Strength Ranking variant matches the OCR text set.
 
-    Driven by the strength_ranking screen definition:
-    - Matches if any page signal's words all appear in the token set
-      (handles signals like "Strength Ranking" whose words may be separate blocks)
-    - Falls back to checking that all unique top-level tab labels are simultaneously
-      visible (Power + Kills + Donation) when no page signal matches
+    Strength Ranking is split into two screen definitions in the catalog —
+    `strength_metrics` (Power / Kills row-1 tabs) and `strength_donation`
+    (Donation row-1 tab + Daily / Weekly sub-tabs). Either variant matching
+    counts as detection.
+
+    Per-variant rule (mirrors the Consumer Contract in
+    lastwar-screen-definitions/README.md):
+    - Match if any page_signal's words all appear in the token set.
+    - Reject if any negative_signal's words all appear in the token set.
     """
-    defn = get_definition("strength_ranking")
-    if defn is None:
-        return False
-
-    for signal in defn.page_signals:
-        words = signal.lower().split()
-        if all(w in all_text_lower for w in words):
+    for screen_id in _STRENGTH_SCREEN_IDS:
+        defn = get_definition(screen_id)
+        if defn is None:
+            continue
+        if any(
+            all(w in all_text_lower for w in neg.lower().split())
+            for neg in defn.negative_signals
+        ):
+            continue
+        if any(
+            all(w in all_text_lower for w in sig.lower().split())
+            for sig in defn.page_signals
+        ):
             return True
-
-    if defn.tabs:
-        top_labels = {tab.signals[0].lower() for tab in defn.tabs.items if tab.signals}
-        if top_labels and top_labels <= all_text_lower:
-            return True
-
     return False
 
 

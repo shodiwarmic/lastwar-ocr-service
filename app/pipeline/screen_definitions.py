@@ -10,8 +10,10 @@ crop fraction only requires editing the YAML files in app/screen_definitions/.
 Bundled definition layout (relative to this file's parent package):
     app/screen_definitions/catalog.yaml
     app/screen_definitions/screens/daily_ranking.yaml
-    app/screen_definitions/screens/strength_ranking.yaml
     app/screen_definitions/screens/weekly_ranking.yaml
+    app/screen_definitions/screens/strength_metrics.yaml
+    app/screen_definitions/screens/strength_donation.yaml
+    app/screen_definitions/screens/season_contribution.yaml
 
 All definitions are parsed once and cached via @lru_cache.
 """
