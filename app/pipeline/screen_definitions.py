@@ -18,11 +18,13 @@ All definitions are parsed once and cached via @lru_cache.
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Optional
 
+import jsonschema
 import yaml
 
 # Path to the bundled YAML files (app/screen_definitions/)
@@ -301,13 +303,23 @@ def _parse_definition(raw: dict) -> ScreenDefinition:
 # ---------------------------------------------------------------------------
 
 @lru_cache(maxsize=1)
+def _load_meta_schema() -> dict:
+    schema_path = os.path.join(_DEFS_DIR, "meta-schema.json")
+    with open(schema_path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+@lru_cache(maxsize=1)
 def load_all() -> list[ScreenDefinition]:
     """
     Loads all screen definitions in catalog priority order.
 
     Reads the bundled catalog.yaml to discover which YAML files to load and
-    in what order, then parses each one. Results are cached after the first
-    call so the files are read only once per process lifetime.
+    in what order, then validates and parses each one. Results are cached
+    after the first call so the files are read only once per process lifetime.
+
+    Each YAML is validated against meta-schema.json — a validation failure
+    raises and aborts startup rather than silently falling back to defaults.
 
     Returns:
         List of ScreenDefinition objects ordered by priority (lowest first).
@@ -321,12 +333,21 @@ def load_all() -> list[ScreenDefinition]:
         key=lambda e: e.get("priority", 99),
     )
 
+    schema = _load_meta_schema()
+
     definitions = []
     for entry in entries:
         rel_path = entry["file"]  # e.g. "screens/strength_ranking.yaml"
         abs_path = os.path.join(_DEFS_DIR, rel_path)
         with open(abs_path, "r", encoding="utf-8") as f:
             raw = yaml.safe_load(f)
+        try:
+            jsonschema.validate(raw, schema)
+        except jsonschema.ValidationError as e:
+            raise RuntimeError(
+                f"Screen definition {rel_path} failed schema validation: "
+                f"{e.message} (at {'/'.join(str(p) for p in e.absolute_path)})"
+            ) from e
         definitions.append(_parse_definition(raw))
 
     return definitions
