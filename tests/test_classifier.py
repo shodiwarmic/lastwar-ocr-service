@@ -250,11 +250,17 @@ def _try_load_source_image(source_file: str):
     ]
 
     for directory in search_dirs:
-        candidate = directory / source_file
-        if candidate.exists():
-            try:
-                return pil_from_bytes(candidate.read_bytes())
-            except Exception:
-                pass
+        if not directory.is_dir():
+            continue
+        # Walk subdirectories — lastwar-screenshots is now organised by
+        # device/configuration (pixel_10_pro_xl/, pixel_fold_*/) rather
+        # than a flat layout.
+        candidates = [directory / source_file, *directory.rglob(source_file)]
+        for candidate in candidates:
+            if candidate.is_file():
+                try:
+                    return pil_from_bytes(candidate.read_bytes())
+                except Exception:
+                    pass
 
     return None

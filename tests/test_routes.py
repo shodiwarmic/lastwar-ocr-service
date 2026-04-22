@@ -531,16 +531,22 @@ def _real_image_or_synthetic(source_file: str, fixture_name: str) -> FileStorage
     ]
 
     for directory in search_dirs:
+        if not directory.is_dir():
+            continue
         for name in [source_file, f"{fixture_name}.png"]:
             if not name:
                 continue
-            candidate = directory / name
-            if candidate.exists():
-                return FileStorage(
-                    stream=io.BytesIO(candidate.read_bytes()),
-                    filename=name,
-                    content_type="image/png",
-                )
+            # Walk subdirectories — lastwar-screenshots is now organised by
+            # device/configuration (pixel_10_pro_xl/, pixel_fold_*/) rather
+            # than a flat layout.
+            candidates = [directory / name, *directory.rglob(name)]
+            for candidate in candidates:
+                if candidate.is_file():
+                    return FileStorage(
+                        stream=io.BytesIO(candidate.read_bytes()),
+                        filename=name,
+                        content_type="image/png",
+                    )
 
     # Real screenshot not found — fall back to synthetic
     return png_file_storage(f"{fixture_name}.png")
