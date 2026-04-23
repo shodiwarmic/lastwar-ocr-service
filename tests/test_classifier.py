@@ -160,30 +160,58 @@ class TestClassifyFromOcrText:
 # Real fixture tests — auto-discovered from tests/fixtures/ocr_responses/
 # ---------------------------------------------------------------------------
 
-# Day/screen keywords mapped to expected output category
+# Day/screen keywords mapped to expected output category. Keys are matched
+# against the lowercased fixture stem; the **longest matching key** wins so
+# specific names (e.g. "siege_weekly") take precedence over generic ones
+# ("weekly"). Add new keys as new screens land — the order in this dict is
+# only for human readability.
 _FILENAME_TO_CATEGORY = {
+    # Daily VS day tabs
     "monday":           "monday",
     "tuesday":          "tuesday",
     "wednesday":        "wednesday",
     "thursday":         "thursday",
     "friday":           "friday",
     "saturday":         "saturday",
+    # Weekly VS
     "weekly":           "weekly",
+    # Strength Ranking
     "power":            "power",
     "strength":         "power",
     "kills":            "kills",
     "donation_daily":   "donation_daily",
     "donation_weekly":  "donation_weekly",
+    # Alliance Contribution — category × period
+    "mutual_assistance_daily":  "mutual_assistance_daily",
+    "mutual_assistance_weekly": "mutual_assistance_weekly",
+    "mutual_assistance_season": "mutual_assistance_season",
+    "siege_daily":              "siege_daily",
+    "siege_weekly":             "siege_weekly",
+    "siege_season":             "siege_season",
+    "rare_soil_war_daily":      "rare_soil_war_daily",
+    "rare_soil_war_weekly":     "rare_soil_war_weekly",
+    "rare_soil_war_season":     "rare_soil_war_season",
+    "defeat_daily":             "defeat_daily",
+    "defeat_weekly":            "defeat_weekly",
+    "defeat_season":            "defeat_season",
 }
 
 
 def _infer_category(fixture_name: str):
-    """Infer expected category from fixture filename, or None if unrecognised."""
+    """
+    Infer expected category from fixture filename, or None if unrecognised.
+
+    Uses **longest-match-wins**: when multiple keys appear in the filename,
+    the longest (most specific) one is selected. This keeps generic keys
+    like "weekly" usable while making compound keys like "siege_weekly"
+    take precedence on filenames that contain both.
+    """
     lower = fixture_name.lower()
-    for keyword, category in _FILENAME_TO_CATEGORY.items():
-        if keyword in lower:
-            return category
-    return None
+    matches = [(k, v) for k, v in _FILENAME_TO_CATEGORY.items() if k in lower]
+    if not matches:
+        return None
+    matches.sort(key=lambda kv: -len(kv[0]))
+    return matches[0][1]
 
 
 def _discovered_fixtures():

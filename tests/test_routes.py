@@ -455,11 +455,15 @@ _FILENAME_TO_CATEGORY = {
 
 
 def _infer_category(fixture_name: str):
+    """Longest-match-wins so e.g. `siege_weekly_*` resolves to `siege_weekly`
+    rather than the generic `weekly`. See test_classifier.py for the same
+    behaviour applied to its parallel inferrer."""
     lower = fixture_name.lower()
-    for keyword, category in _FILENAME_TO_CATEGORY.items():
-        if keyword in lower:
-            return category
-    return None
+    matches = [(k, v) for k, v in _FILENAME_TO_CATEGORY.items() if k in lower]
+    if not matches:
+        return None
+    matches.sort(key=lambda kv: -len(kv[0]))
+    return matches[0][1]
 
 
 def _discovered_fixtures():

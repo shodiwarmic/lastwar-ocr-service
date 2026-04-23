@@ -1,33 +1,26 @@
 """
 app/pipeline/classifier.py
 
-Two-pass screenshot classification for Last War: Survival ranking screens.
+Screenshot classification for Last War: Survival ranking screens.
 
-Pass 1 — Pre-OCR (fast path):
-    Uses colour sampling of the tab area to detect the active UI tab without
-    calling the Vision API. Returns a confidence score. If confidence is below
-    CONFIDENCE_THRESHOLD the image is routed to Pass 2.
-
-Pass 2 — OCR-assisted (fallback):
-    The image is sent individually (unstitched) to the Vision API. The returned
-    text blocks are parsed to identify UI labels that unambiguously identify the
-    screen type.
-
-    For Daily Rank screens, Pass 2 uses the OCR bounding boxes to locate each
-    day tab precisely in the image, then samples the background colour of that
-    crop using Pillow. The active tab has an orange background; inactive tabs
-    are grey. This is more reliable than text-pattern analysis because it reads
-    a physical pixel signal directly from the image rather than inferring from
-    OCR text characteristics.
+Single entry point — `classify_from_ocr_text(blocks, image)` — runs after the
+stitch-first OCR step. Looks at the OCR text first to identify the screen
+type, then samples the source image to resolve which tab is active. The
+per-frame `pre_ocr_hint` colour-sample fast path was removed when the
+pipeline switched to stitch-first; it is still documented in the
+screen-definition schema as an optional fast-skip for the Android scanner,
+but the OCR service no longer consumes it.
 
 Classification priority order (prevents mis-routing):
-    1. Strength Ranking  — unique header + different tab set, caught first
-    2. Weekly Rank       — "Weekly Rank" tab is orange, no day tabs active
-    3. Daily Rank day    — bounding-box colour sampling of each day tab region
-    4. Daily Rank text   — scoring fallback when image not available (tests)
+    1. Strength Ranking      — unique header + different tab set, caught first
+    2. Alliance Contribution — multi-row tab groups joined as `{cat}_{period}`
+    3. Weekly Rank           — "Weekly Rank" tab is orange, no day tabs active
+    4. Daily Rank day        — bounding-box colour sampling of each day tab
+    5. Daily Rank text       — scoring fallback when image not available (tests)
 
-Coordinates used in blind colour sampling (Pass 1) are expressed as fractions
-of image dimensions so results are consistent across all device resolutions.
+Coordinates used inside per-tab colour sampling come from OCR bounding boxes
+(not normalised image fractions), so the classifier degrades gracefully when
+the game UI is letterboxed inside a wider screen.
 """
 
 from __future__ import annotations
@@ -37,8 +30,7 @@ from typing import Optional
 
 from PIL import Image
 
-from app.pipeline.screen_definitions import load_all, get_definition
-from app.utils.image_utils import sample_color_region, is_orange
+from app.pipeline.screen_definitions import get_definition
 from app.utils.text_utils import normalize_day_label
 from app.utils.logger import get_logger
 
@@ -54,46 +46,6 @@ CONFIDENCE_THRESHOLD = 0.80
 # ---------------------------------------------------------------------------
 # Public interface
 # ---------------------------------------------------------------------------
-
-def classify_screenshot(
-    image: Image.Image,
-    filename: str = "",
-) -> tuple[Optional[str], float]:
-    """
-    Classifies a screenshot using Pass 1 colour sampling only.
-
-    Iterates over screen definitions in priority order. For each definition
-    that has a pre_ocr_hint, samples the image at the hint position and
-    checks whether the colour matches. On a match:
-      - Single-tab screens (strength, weekly): return the sole tab category.
-      - Multi-tab screens (daily): sample each day-tab position at the
-        definition's tabs.y_hint to find the active day via orange detection.
-        If no day tab registers as orange the image is left unclassified so
-        it falls through to the more reliable Pass 2 brightness comparison.
-
-    Args:
-        image:    PIL Image of the screenshot to classify.
-        filename: Original filename, used only for logging.
-
-    Returns:
-        Tuple of (category_string_or_None, confidence_float).
-        category is one of: "monday"–"saturday", "weekly", "power", or None.
-        confidence is 0.0–1.0.
-    """
-    for defn in load_all():
-        category, confidence = _pass1_check_definition(image, defn)
-        if category:
-            logger.debug(
-                "Pass 1: %s detected" % defn.name,
-                extra={"image_filename": filename, "category": category,
-                       "confidence": confidence},
-            )
-            return category, confidence
-
-    logger.debug("Pass 1: Classification ambiguous",
-                 extra={"image_filename": filename, "confidence": 0.0})
-    return None, 0.0
-
 
 def classify_from_ocr_text(
     text_blocks: list[dict],
@@ -129,13 +81,28 @@ def classify_from_ocr_text(
         )
         return category, 1.0
 
-    # 2. Weekly Rank — weekly token without day tab abbreviations
+    # 2. Alliance Contribution — unique title; row-1 (orange) + row-2 (brightest)
+    if _ocr_detect_alliance_contribution(all_text_lower):
+        category = _detect_active_ac_tab(image, text_blocks) if image is not None else None
+        if category:
+            logger.debug(
+                "Pass 2: Alliance Contribution detected via OCR",
+                extra={"image_filename": filename, "active_tab": category},
+            )
+            return category, 1.0
+        logger.warning(
+            "Pass 2: Alliance Contribution detected but tab resolution failed",
+            extra={"image_filename": filename},
+        )
+        return None, 0.0
+
+    # 3. Weekly Rank — weekly token without day tab abbreviations
     if _ocr_detect_weekly(all_text_lower):
         logger.debug("Pass 2: Weekly Rank detected via OCR",
                      extra={"image_filename": filename})
         return "weekly", 1.0
 
-    # 3. Daily Rank — bounding-box colour sampling of each day tab region
+    # 4. Daily Rank — bounding-box colour sampling of each day tab region
     if image is not None:
         day = _detect_active_day_by_color(image, text_blocks)
         if day:
@@ -143,7 +110,7 @@ def classify_from_ocr_text(
                          extra={"image_filename": filename, "day": day})
             return day, 0.95
 
-    # 4. Daily Rank — text scoring fallback when no image is available
+    # 5. Daily Rank — text scoring fallback when no image is available
     day = _ocr_detect_active_day_by_text(text_blocks)
     if day:
         logger.debug("Pass 2: Daily Rank detected via text scoring fallback",
@@ -158,77 +125,8 @@ def classify_from_ocr_text(
 
 
 # ---------------------------------------------------------------------------
-# Pass 1 — definition-driven colour-sampling helpers
+# HSV / colour helpers
 # ---------------------------------------------------------------------------
-
-def _pass1_check_definition(
-    image: Image.Image,
-    defn,
-) -> tuple[Optional[str], float]:
-    """
-    Attempts to classify image against a single screen definition.
-
-    Samples the image at the definition's pre_ocr_hint position and checks
-    whether the colour matches the hint's colour spec using HSV thresholds
-    when provided (falling back to a simple RGB orange check otherwise).
-
-    For single-tab definitions the sole tab category is returned immediately.
-    For multi-tab definitions (daily ranking) each tab's x_hint is sampled
-    at tabs.y_hint; the first tab whose position registers as orange wins.
-    If none register, (None, 0.0) is returned so Pass 2 can handle it.
-
-    Args:
-        image: PIL Image to classify.
-        defn:  ScreenDefinition from the loaded catalog.
-
-    Returns:
-        (category, confidence) or (None, 0.0).
-    """
-    hint = defn.pre_ocr_hint
-    if hint is None:
-        return None, 0.0
-
-    rgb = sample_color_region(image, hint.x_hint, hint.y_hint)
-    if not _color_matches(rgb, hint.color):
-        return None, 0.0
-
-    if defn.tabs is None or not defn.tabs.items:
-        return defn.id, hint.confidence
-
-    if len(defn.tabs.items) == 1:
-        return defn.tabs.items[0].category, hint.confidence
-
-    # Multi-tab screen: sample each tab position for orange to find the
-    # active day.  Day tabs use "brightest" strategy for high-accuracy Pass 2
-    # detection; here we use orange as a quick proxy.  If no tab fires we
-    # return (None, 0.0) so the image falls through to OCR-based Pass 2.
-    for tab in defn.tabs.items:
-        tab_rgb = sample_color_region(image, tab.x_hint, defn.tabs.y_hint)
-        if _color_matches(tab_rgb, hint.color):
-            return tab.category, hint.confidence
-
-    return None, 0.0
-
-
-def _color_matches(rgb: tuple[int, int, int], color_def) -> bool:
-    """
-    Returns True if an RGB sample matches a ColorDef.
-
-    Uses the definition's HSV override when present (accurate, device-agnostic);
-    falls back to the simple RGB-range orange check in image_utils otherwise.
-
-    Args:
-        rgb:       (R, G, B) sampled pixel values 0–255.
-        color_def: ColorDef from the screen definition, or None.
-
-    Returns:
-        True if the sample colour is an orange active-tab background.
-    """
-    if color_def and color_def.hsv_override:
-        o = color_def.hsv_override
-        return _is_orange_hsv_thresholds(rgb, o.h_min, o.h_max, o.s_min, o.v_min)
-    return is_orange(rgb)
-
 
 def _is_orange_hsv_thresholds(
     rgb: tuple[int, int, int],
@@ -724,3 +622,158 @@ def _avg_y_from_bbox(bbox) -> float:
         return sum(v.get("y", 0) for v in vertices) / len(vertices)
     except (TypeError, ZeroDivisionError):
         return 0.0
+
+
+# ---------------------------------------------------------------------------
+# Alliance Contribution — page detection + active tab resolution
+# ---------------------------------------------------------------------------
+
+def _ocr_detect_alliance_contribution(all_text_lower: set[str]) -> bool:
+    """
+    Returns True if Alliance Contribution markers are present in the OCR text set.
+    Mirrors the rule documented in lastwar-screen-definitions/README.md
+    Consumer Contract — every page_signal word must appear, no negative_signal
+    word-set may all appear.
+    """
+    defn = get_definition("alliance_contribution")
+    if defn is None:
+        return False
+    if any(
+        all(w in all_text_lower for w in neg.lower().split())
+        for neg in defn.negative_signals
+    ):
+        return False
+    return any(
+        all(w in all_text_lower for w in sig.lower().split())
+        for sig in defn.page_signals
+    )
+
+
+def _detect_active_ac_tab(
+    image: Image.Image,
+    text_blocks: list[dict],
+) -> Optional[str]:
+    """
+    Identifies the active Alliance Contribution category+period combo.
+
+    The screen has two independent tab rows declared via `tabs.groups` in the
+    YAML — by convention `category` (Mutual Assistance / Siege / Rare Soil War /
+    Defeat, orange-fill `color_fraction`) and `period` (Daily / Weekly /
+    Season Total Ranking, white-text `brightest`). Each group's winner is
+    determined independently and the winners are joined with `_` in the
+    declaration order of `tabs.groups`, matching the wire-format category
+    documented in the Consumer Contract (e.g. `siege_daily`).
+
+    Returns None if either group cannot be resolved confidently.
+    """
+    defn = get_definition("alliance_contribution")
+    if defn is None or not defn.tabs or not defn.tabs.groups:
+        return None
+
+    img_w, img_h = image.size
+    ai = defn.tabs.active_indicator
+    pad = max(4, round(img_w * ai.bbox_padding_fraction))
+
+    # Orange thresholds, with documented RGB-fallback equivalents
+    if ai.color and ai.color.hsv_override:
+        o = ai.color.hsv_override
+        h_min, h_max, s_min, v_min = o.h_min, o.h_max, o.s_min, o.v_min
+    else:
+        h_min, h_max, s_min, v_min = 0.014, 0.153, 0.40, 0.55
+
+    # Group items by their `group` field
+    items_by_group: dict[str, list] = {}
+    for tab in defn.tabs.items:
+        if tab.group:
+            items_by_group.setdefault(tab.group, []).append(tab)
+
+    winners: list[str] = []
+    for group_id in defn.tabs.groups.keys():
+        group_cfg = defn.tabs.groups[group_id]
+        items = items_by_group.get(group_id, [])
+        if not items:
+            return None
+        category = _detect_winner_in_ac_group(
+            image, text_blocks, img_w, img_h, pad, items, group_cfg,
+            h_min, h_max, s_min, v_min,
+        )
+        if category is None:
+            return None
+        winners.append(category)
+    return "_".join(winners)
+
+
+def _detect_winner_in_ac_group(
+    image: Image.Image,
+    text_blocks: list[dict],
+    img_w: int,
+    img_h: int,
+    pad: int,
+    items: list,
+    group_cfg,
+    h_min: float, h_max: float, s_min: float, v_min: float,
+) -> Optional[str]:
+    """
+    Picks the active tab within a single AC group. Strategy is one of
+    "color_fraction" (active tab has solid orange background — pick the
+    candidate whose averaged crop is orange) or "brightest" (active tab
+    has whiter text/background — pick the candidate with the highest V).
+    """
+    candidates: list[tuple[str, float]] = []  # (category, score)
+
+    for tab in items:
+        if not tab.signals:
+            continue
+        # Find an OCR block matching any of this tab's signals.
+        match_block = None
+        for signal in tab.signals:
+            sig_words = signal.lower().split()
+            for block in text_blocks:
+                btext = block["text"].strip().lower()
+                if all(w in btext for w in sig_words):
+                    match_block = block
+                    break
+            if match_block:
+                break
+        if match_block is None:
+            continue
+
+        left, top, right, bottom = _bbox_to_pixel_coords(match_block.get("bbox"))
+        if left is None:
+            continue
+        crop = image.crop((
+            max(0,     left  - pad),
+            max(0,     top   - pad),
+            min(img_w, right + pad),
+            min(img_h, bottom + pad),
+        ))
+        avg_rgb = _average_rgb(crop)
+
+        if group_cfg.strategy == "color_fraction":
+            # Average-RGB orange test — same approach Strength uses.
+            if _is_orange_hsv_thresholds(avg_rgb, h_min, h_max, s_min, v_min):
+                # Score is "1.0" — any orange match wins; ties broken in declaration order.
+                candidates.append((tab.category, 1.0))
+        elif group_cfg.strategy == "brightest":
+            r, g, b = avg_rgb
+            _, _s, v = colorsys.rgb_to_hsv(r / 255.0, g / 255.0, b / 255.0)
+            candidates.append((tab.category, v))
+
+    if not candidates:
+        return None
+    candidates.sort(key=lambda c: -c[1])
+    # For brightest, require a small min_gap between winner and runner-up to
+    # avoid noise. Period sub-tabs are text-only (no solid fill), so the
+    # active vs inactive V difference is small — measured ~0.039 on the
+    # alliance_contribution period row. min_fraction (already ~0.02 for
+    # text-only rows in YAML) is a reasonable proxy for the expected gap.
+    if group_cfg.strategy == "brightest" and len(candidates) > 1:
+        gap = candidates[0][1] - candidates[1][1]
+        if gap < group_cfg.min_fraction:
+            logger.debug(
+                "AC sub-tab brightness gap too small — inconclusive",
+                extra={"best": candidates[0][0], "gap": round(gap, 3),
+                       "threshold": group_cfg.min_fraction},
+            )
+            return None
+    return candidates[0][0]

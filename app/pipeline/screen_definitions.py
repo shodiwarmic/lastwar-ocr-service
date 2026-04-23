@@ -94,6 +94,13 @@ class TabItem:
     category: str = ""
     signals: list[str] = field(default_factory=list)
     x_hint: float = 0.5
+    group: str = ""
+
+
+@dataclass
+class TabGroupConfig:
+    strategy: str = "color_fraction"  # or "brightest"
+    min_fraction: float = 0.10
 
 
 @dataclass
@@ -102,6 +109,11 @@ class TabsDef:
     items: list[TabItem] = field(default_factory=list)
     search_region: Optional[NormalizedRegion] = None
     y_hint: float = 0.20
+    # Maps group id (e.g. "category", "period") to its detection config.
+    # Populated only on layouts where any tab_item has a non-empty `group`
+    # (e.g. alliance_contribution). When non-empty, the classifier picks
+    # one winner per group and joins them with `_`.
+    groups: dict = field(default_factory=dict)  # str -> TabGroupConfig
 
 
 @dataclass
@@ -236,14 +248,22 @@ def _parse_tabs(d: Optional[dict]) -> Optional[TabsDef]:
             category=item.get("category", ""),
             signals=item.get("signals", []),
             x_hint=float(item.get("x_hint", 0.5)),
+            group=item.get("group", ""),
         )
         for item in d.get("items", [])
     ]
+    groups: dict = {}
+    for gid, gcfg in (d.get("groups") or {}).items():
+        groups[gid] = TabGroupConfig(
+            strategy=gcfg.get("strategy", "color_fraction"),
+            min_fraction=float(gcfg.get("min_fraction", 0.10)),
+        )
     return TabsDef(
         active_indicator=_parse_tab_active_indicator(d.get("active_indicator")),
         items=items,
         search_region=_parse_normalized_region(d.get("search_region")),
         y_hint=float(d.get("y_hint", 0.20)),
+        groups=groups,
     )
 
 
