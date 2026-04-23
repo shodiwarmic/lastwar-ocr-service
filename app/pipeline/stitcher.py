@@ -32,6 +32,7 @@ from PIL import Image
 
 from app.utils.image_utils import pil_to_bytes
 from app.utils.logger import get_logger
+from app.utils.window_detect import crop_to_window, detect_window_by_black_borders
 
 logger = get_logger(__name__)
 
@@ -81,8 +82,39 @@ def prepare_stitched_batches(
         API call.  ImageRegion.y_start / y_end delimit each source image's
         pixel rows within the stitched output.
     """
-    groups: dict[tuple[int, int], list[tuple[Image.Image, str]]] = {}
+    # Pre-step: crop each input image to its detected game window. This
+    # neutralises the inside-landscape split-screen positioning issue
+    # documented as B5 in the per-fixture verification report — the game
+    # runs in a portrait sub-window inside the landscape canvas, and YAML
+    # normalised fractions (x_hint, search_region, etc.) all assume the
+    # game spans the full image. After cropping, downstream classifier
+    # and extractor see the game window directly and the fractions land
+    # in the right pixels regardless of where on the canvas Android put
+    # the window.
+    #
+    # detect_window_by_black_borders returns None when the game already
+    # fills the image (no letterboxing) — in that case the original
+    # image passes through unchanged.
+    cropped: list[tuple[Image.Image, str]] = []
     for img, filename in images:
+        rect = detect_window_by_black_borders(img)
+        if rect is None:
+            cropped.append((img, filename))
+            continue
+        new_img = crop_to_window(img, rect)
+        logger.info(
+            "Cropped letterboxed image to detected game window",
+            extra={
+                "image_filename": filename,
+                "from":           f"{img.width}x{img.height}",
+                "to":             f"{new_img.width}x{new_img.height}",
+                "window_rect":    rect.as_tuple(),
+            },
+        )
+        cropped.append((new_img, filename))
+
+    groups: dict[tuple[int, int], list[tuple[Image.Image, str]]] = {}
+    for img, filename in cropped:
         key = (img.width, img.height)
         groups.setdefault(key, []).append((img, filename))
 

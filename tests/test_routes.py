@@ -546,6 +546,9 @@ def _real_image_or_synthetic(source_file: str, fixture_name: str) -> FileStorage
             candidates = [directory / name, *directory.rglob(name)]
             for candidate in candidates:
                 if candidate.is_file():
+                    # Route tests pass the original bytes through the real
+                    # pipeline (stitcher crops letterboxed frames). No need
+                    # to pre-crop here — the stitcher will.
                     return FileStorage(
                         stream=io.BytesIO(candidate.read_bytes()),
                         filename=name,

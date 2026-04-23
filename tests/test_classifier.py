@@ -287,8 +287,21 @@ def _try_load_source_image(source_file: str):
         for candidate in candidates:
             if candidate.is_file():
                 try:
-                    return pil_from_bytes(candidate.read_bytes())
+                    img = pil_from_bytes(candidate.read_bytes())
                 except Exception:
-                    pass
+                    continue
+                # Mirror the production stitcher's pre-processing step: if
+                # the source image is letterboxed (e.g. Pixel Fold inside-
+                # landscape split-screen capture), crop to the detected game
+                # window so that bbox coordinates from re-captured fixtures
+                # line up with the image the classifier samples colours from.
+                from app.utils.window_detect import (
+                    crop_to_window,
+                    detect_window_by_black_borders,
+                )
+                rect = detect_window_by_black_borders(img)
+                if rect is not None:
+                    img = crop_to_window(img, rect)
+                return img
 
     return None
