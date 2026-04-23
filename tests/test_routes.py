@@ -498,8 +498,9 @@ class TestProcessBatchRealFixtures:
         mock_ann.pages = []
 
         # Use the real screenshot if available so colour-based classification
-        # works correctly. Fall back to a synthetic PNG if not found — in that
-        # case Pass 1 will be ambiguous and Pass 2 text scoring takes over.
+        # works correctly. Fall back to a synthetic PNG if not found — in
+        # that case the text-scoring fallback inside classify_from_ocr_text
+        # takes over.
         image_file = _real_image_or_synthetic(fixture_data.get("source_file", ""), fixture_name)
 
         with patch("app.routes.run_ocr", return_value=(mock_ann, fixture_data["image_hash"])):

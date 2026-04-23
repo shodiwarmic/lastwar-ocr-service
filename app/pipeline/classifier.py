@@ -53,11 +53,10 @@ def classify_from_ocr_text(
     filename: str = "",
 ) -> tuple[Optional[str], float]:
     """
-    Classifies a screenshot using text blocks returned by the Vision API.
+    Classifies a screenshot using text blocks returned by the OCR engine.
 
-    This is the Pass 2 fallback called when Pass 1 confidence is below
-    CONFIDENCE_THRESHOLD. The stitch-first pipeline always supplies a PIL
-    image, enabling bounding-box colour sampling for all tab detection.
+    The stitch-first pipeline always supplies a PIL image, enabling bounding-
+    box colour sampling for all tab detection.
 
     Args:
         text_blocks: List of OCR text block dicts sorted top-to-bottom.

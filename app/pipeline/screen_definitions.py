@@ -359,7 +359,7 @@ def load_all() -> list[ScreenDefinition]:
 
     definitions = []
     for entry in entries:
-        rel_path = entry["file"]  # e.g. "screens/strength_ranking.yaml"
+        rel_path = entry["file"]  # e.g. "screens/strength_metrics.yaml"
         abs_path = os.path.join(_DEFS_DIR, rel_path)
         with open(abs_path, "r", encoding="utf-8") as f:
             raw = yaml.safe_load(f)
