@@ -198,9 +198,9 @@ def is_orange(rgb: tuple[int, int, int]) -> bool:
     Returns True if an RGB colour falls within the orange range used by the
     Last War UI for active tabs and highlighted rows.
 
-    Tuned against the sample screenshots. The orange tab colour is approximately
-    (220–255, 100–160, 0–80) in RGB. Adjust thresholds if OCR fixture analysis
-    reveals different values on other devices.
+    Thresholds come from `constants.yaml` under
+    `fallback_colors.orange.rgb`; both consumers MUST use the same values.
+    Edit there, not here, if a UI palette change makes them wrong.
 
     Args:
         rgb: (R, G, B) tuple.
@@ -208,5 +208,6 @@ def is_orange(rgb: tuple[int, int, int]) -> bool:
     Returns:
         True if the colour matches the active-tab orange.
     """
+    from app.utils.constants import orange_rgb
     r, g, b = rgb
-    return r > 200 and 80 <= g <= 170 and b < 90
+    return orange_rgb().matches(r, g, b)

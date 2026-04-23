@@ -36,9 +36,13 @@ _RBADGE_RE = re.compile(r"\bR[1-5]\b")
 _SCORE_RE = re.compile(r"^[\d,]+$")
 
 # Comma-grouped number fragment — used by split_name_score_crash to detect
-# a score embedded at the tail of a merged name+score OCR token.
-# Requires at least one comma group (so bare integers pass through is_numeric_token).
-_COMMA_GROUPED_NUMBER_RE = re.compile(r"\d{1,3}(?:,\d{3})+")
+# a score embedded at the tail of a merged name+score OCR token. The pattern
+# itself is defined in screen-definitions/constants.yaml under
+# `crash_tokens.score_suffix_pattern` so that both consumers (this service
+# and the Android scanner) use the same regex. Compiled once at import time
+# for hot-path performance.
+from app.utils.constants import crash_tokens as _crash_tokens
+_COMMA_GROUPED_NUMBER_RE = re.compile(_crash_tokens().score_suffix_pattern)
 
 # Stray non-alphanumeric characters that are clearly OCR noise.
 # Keeps spaces, hyphens, underscores, apostrophes, and extended Latin/Cyrillic

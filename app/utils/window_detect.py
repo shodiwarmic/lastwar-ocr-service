@@ -37,30 +37,14 @@ from typing import Optional, Sequence
 
 from PIL import Image
 
-# A pixel is "near black" if every channel is at or below this. Tuned wide
-# enough to catch the slightly-grey bars Android renders around split-screen
-# windows; tight enough to reject anything resembling actual UI chrome.
-NEAR_BLACK_MAX_CHANNEL = 30
+from app.utils.constants import window_detection as _wd_constants
 
-# A column/row counts as a "border" when at least this fraction of its
-# sampled pixels are near-black. Allows a few stray noisy pixels.
-BORDER_COVERAGE_THRESHOLD = 0.95
-
-# Sanity floor — the detected window must be at least this fraction of the
-# original dimension to be considered legitimate. Prevents an over-aggressive
-# crop on a frame that genuinely has wide dark UI elements (e.g. a fully
-# black background screen during transitions).
-MIN_WINDOW_FRACTION = 0.20
-
-# How many pixels to sample per column/row when scanning for borders. More =
-# slower but more reliable. 64 is enough to detect the borders without being
-# fooled by sparse non-black pixels in nominally-dark UI.
-SAMPLE_COUNT = 64
-
-# OCR-bbox fallback padding — expand the union-of-bboxes by this fraction
-# of the original dimension to capture UI chrome that has no text (e.g.
-# the back-arrow button at the bottom).
-BBOX_PADDING_FRACTION = 0.03
+# All thresholds for window detection live in screen-definitions/constants.yaml
+# under `window_detection`. Both consumers MUST agree — edit values there, not
+# here. The accessor below resolves them lazily so tests can override the
+# constants module if needed.
+def _consts():
+    return _wd_constants()
 
 
 @dataclass(frozen=True)
@@ -87,7 +71,7 @@ class WindowRect:
 # ---------------------------------------------------------------------------
 
 def _column_is_border(image: Image.Image, x: int, samples: int) -> bool:
-    """True if at least BORDER_COVERAGE_THRESHOLD of `samples` pixels in
+    """True if at least _consts().border_coverage_threshold of `samples` pixels in
     column `x` are near-black."""
     h = image.height
     if h <= 0:
@@ -96,9 +80,9 @@ def _column_is_border(image: Image.Image, x: int, samples: int) -> bool:
     for i in range(samples):
         y = (i * (h - 1)) // max(samples - 1, 1)
         r, g, b = image.getpixel((x, y))[:3]
-        if r <= NEAR_BLACK_MAX_CHANNEL and g <= NEAR_BLACK_MAX_CHANNEL and b <= NEAR_BLACK_MAX_CHANNEL:
+        if r <= _consts().near_black_max_channel and g <= _consts().near_black_max_channel and b <= _consts().near_black_max_channel:
             near_black += 1
-    return near_black >= int(samples * BORDER_COVERAGE_THRESHOLD)
+    return near_black >= int(samples * _consts().border_coverage_threshold)
 
 
 def _row_is_border(image: Image.Image, y: int, samples: int) -> bool:
@@ -109,25 +93,27 @@ def _row_is_border(image: Image.Image, y: int, samples: int) -> bool:
     for i in range(samples):
         x = (i * (w - 1)) // max(samples - 1, 1)
         r, g, b = image.getpixel((x, y))[:3]
-        if r <= NEAR_BLACK_MAX_CHANNEL and g <= NEAR_BLACK_MAX_CHANNEL and b <= NEAR_BLACK_MAX_CHANNEL:
+        if r <= _consts().near_black_max_channel and g <= _consts().near_black_max_channel and b <= _consts().near_black_max_channel:
             near_black += 1
-    return near_black >= int(samples * BORDER_COVERAGE_THRESHOLD)
+    return near_black >= int(samples * _consts().border_coverage_threshold)
 
 
 def detect_window_by_black_borders(
     image: Image.Image,
-    samples: int = SAMPLE_COUNT,
+    samples: Optional[int] = None,
 ) -> Optional[WindowRect]:
     """Find the largest non-border rectangle inside ``image`` by scanning
     each edge inward until a non-border column/row is found.
 
     Returns None when the detected window is implausibly small (smaller
-    than MIN_WINDOW_FRACTION of either dimension), which usually means the
+    than _consts().min_window_fraction of either dimension), which usually means the
     image isn't letterboxed and the caller should treat the full image as
     the window.
 
     Always converts to RGB internally so transparency / palette images work.
     """
+    if samples is None:
+        samples = _consts().sample_count
     rgb = image.convert("RGB") if image.mode != "RGB" else image
     w, h = rgb.size
     if w == 0 or h == 0:
@@ -156,7 +142,7 @@ def detect_window_by_black_borders(
     # Sanity check — reject implausibly-narrow detections. A window that
     # is smaller than 20% of either dimension probably means the borders
     # logic was confused (e.g. the screenshot was a near-black loading frame).
-    if rect.width < int(w * MIN_WINDOW_FRACTION) or rect.height < int(h * MIN_WINDOW_FRACTION):
+    if rect.width < int(w * _consts().min_window_fraction) or rect.height < int(h * _consts().min_window_fraction):
         return None
 
     # If the detection didn't actually shrink anything, return None so the
@@ -174,7 +160,7 @@ def detect_window_by_black_borders(
 def detect_window_by_ocr_bboxes(
     text_blocks: Sequence[dict],
     image_size: tuple[int, int],
-    padding_fraction: float = BBOX_PADDING_FRACTION,
+    padding_fraction: Optional[float] = None,
 ) -> Optional[WindowRect]:
     """Take the union of every text-block bounding box, pad slightly, clamp
     to the image. Use this when ``detect_window_by_black_borders`` returned
@@ -183,6 +169,8 @@ def detect_window_by_ocr_bboxes(
 
     Returns None when there are no text blocks.
     """
+    if padding_fraction is None:
+        padding_fraction = _consts().bbox_padding_fraction
     if not text_blocks:
         return None
 
@@ -222,10 +210,10 @@ def detect_window_by_ocr_bboxes(
     right  = min(img_w,        max_x + pad_x)
     bottom = min(img_h,        max_y + pad_y)
 
-    # Sanity: must still cover at least MIN_WINDOW_FRACTION of each dim.
-    if right - left < int(img_w * MIN_WINDOW_FRACTION):
+    # Sanity: must still cover at least _consts().min_window_fraction of each dim.
+    if right - left < int(img_w * _consts().min_window_fraction):
         return None
-    if bottom - top < int(img_h * MIN_WINDOW_FRACTION):
+    if bottom - top < int(img_h * _consts().min_window_fraction):
         return None
     if right - left == img_w and bottom - top == img_h:
         return None
