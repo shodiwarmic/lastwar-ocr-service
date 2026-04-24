@@ -33,25 +33,52 @@ Authentication:
 from __future__ import annotations
 
 import hashlib
+import os
 from typing import Optional
 
 from PIL import Image
-from google.cloud import vision
 
 from app.utils.image_utils import pil_to_bytes
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# Module-level client cache — initialised on first use, reused thereafter
-_vision_client: Optional[vision.ImageAnnotatorClient] = None
+# OCR engine selection — defaults to Cloud Vision (the hosted-deployment
+# default). Set OCR_ENGINE=paddleocr to use the local sidecar PaddleOCR
+# pipeline (see app/pipeline/ocr_client_paddle.py and the
+# Dockerfile.local image). The paddleocr / paddlepaddle packages are not
+# in the default requirements.txt — they're only pulled in by the local
+# image build.
+_ENGINE = os.environ.get("OCR_ENGINE", "cloud_vision").lower()
+
+# Cloud Vision SDK is imported lazily so the local image (which doesn't
+# install google-cloud-vision) doesn't blow up at module-import time.
+vision = None  # populated lazily by _import_vision() below
+_vision_client = None  # type: ignore[assignment]
+
+
+def _import_vision():
+    """Lazy import of google.cloud.vision. Raises ImportError clearly if
+    the engine is set to cloud_vision but the SDK isn't installed."""
+    global vision
+    if vision is not None:
+        return vision
+    try:
+        from google.cloud import vision as _vision_mod
+    except ImportError as exc:
+        raise ImportError(
+            "OCR_ENGINE=cloud_vision but google-cloud-vision is not installed. "
+            "Either `pip install google-cloud-vision` or set OCR_ENGINE=paddleocr."
+        ) from exc
+    vision = _vision_mod
+    return vision
 
 
 # ---------------------------------------------------------------------------
 # Client management
 # ---------------------------------------------------------------------------
 
-def get_vision_client() -> vision.ImageAnnotatorClient:
+def get_vision_client():
     """
     Returns a cached Google Cloud Vision ImageAnnotatorClient.
 
@@ -65,11 +92,14 @@ def get_vision_client() -> vision.ImageAnnotatorClient:
     Raises:
         google.auth.exceptions.DefaultCredentialsError: If Application Default
         Credentials are not configured. See module docstring for setup steps.
+        ImportError: If OCR_ENGINE=cloud_vision but google-cloud-vision is
+        not installed.
     """
     global _vision_client
     if _vision_client is None:
+        v = _import_vision()
         logger.info("Initialising Google Cloud Vision client")
-        _vision_client = vision.ImageAnnotatorClient()
+        _vision_client = v.ImageAnnotatorClient()
     return _vision_client
 
 
@@ -79,40 +109,44 @@ def get_vision_client() -> vision.ImageAnnotatorClient:
 
 def run_ocr(
     pil_image: Image.Image,
-    client: Optional[vision.ImageAnnotatorClient] = None,
+    client=None,
     fmt: str = "JPEG",
 ) -> tuple[Optional[object], str]:
     """
-    Submits a PIL Image to the Vision API and returns the text annotation.
+    OCR entry point. Dispatches to the engine selected by the OCR_ENGINE
+    environment variable (`cloud_vision` default; `paddleocr` for the
+    local-deployment sidecar). Returns (annotation_or_None, image_hash).
 
-    Uses document_text_detection for superior handling of the dense tabular
-    layout found in Last War ranking screens. This mode returns a full
-    TextAnnotation with page → block → paragraph → word → symbol hierarchy,
-    giving precise bounding boxes for spatial row clustering in the extractor.
-
-    Args:
-        pil_image: The image to analyse. For best results this should be a
-                   stitched image prepared by the stitcher module.
-        client:    Optional Vision client for dependency injection in tests.
-                   If None, get_vision_client() is called automatically.
-
-    Returns:
-        Tuple of (TextAnnotation_or_None, image_hash_string).
-        TextAnnotation is None if the API call fails or returns no text.
-        image_hash is a SHA-256 hex digest of the PNG bytes submitted —
-        use this as a cache key to avoid re-processing identical images.
-
-    Example:
-        annotation, img_hash = run_ocr(stitched_image)
-        if annotation:
-            blocks = extract_text_blocks(annotation)
+    The annotation is consumed by ``extract_text_blocks`` which accepts
+    both Cloud Vision proto objects and dict-shape annotations from
+    PaddleOCR / fixture captures, so the rest of the pipeline is engine-
+    agnostic.
     """
+    if _ENGINE == "paddleocr":
+        from app.pipeline import ocr_client_paddle  # noqa: WPS433
+        return ocr_client_paddle.run_ocr(pil_image, fmt=fmt)
+    return _run_ocr_cloud_vision(pil_image, client=client, fmt=fmt)
+
+
+def _run_ocr_cloud_vision(
+    pil_image: Image.Image,
+    client=None,
+    fmt: str = "JPEG",
+) -> tuple[Optional[object], str]:
+    """
+    Cloud Vision implementation of run_ocr.
+
+    Uses document_text_detection for dense-table layouts (returns word-
+    and symbol-level bboxes that the extractor uses for row clustering).
+    The Vision client is initialised once per container and reused.
+    """
+    v = _import_vision()
     client = client or get_vision_client()
 
     img_bytes = pil_to_bytes(pil_image, fmt=fmt)
     img_hash  = _hash_image_bytes(img_bytes)
 
-    vision_image = vision.Image(content=img_bytes)
+    vision_image = v.Image(content=img_bytes)
 
     try:
         response = client.document_text_detection(image=vision_image)

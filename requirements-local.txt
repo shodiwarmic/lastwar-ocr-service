@@ -1,0 +1,21 @@
+# Requirements for the local-deployment build (Dockerfile.local).
+# Replaces google-cloud-vision with PaddleOCR for fully-local OCR.
+#
+# Use:
+#   pip install -r requirements-local.txt
+# in lieu of requirements.txt when running with OCR_ENGINE=paddleocr.
+
+# Common deps shared with the cloud build (requirements.txt minus google-cloud-vision)
+flask==3.0.3
+gunicorn==22.0.0
+Pillow==10.4.0
+pydantic==2.8.2
+python-dotenv==1.0.1
+PyYAML==6.0.2
+jsonschema==4.23.0
+
+# PaddleOCR backend. Heavy install (~700MB venv + ~250MB model weights
+# downloaded on first use) but no external service or API cost.
+paddleocr==3.5.0
+paddlepaddle==3.0.0
+numpy>=1.26
