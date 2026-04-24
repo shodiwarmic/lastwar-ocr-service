@@ -4,7 +4,7 @@
   "image_width": 1091,
   "image_height": 1840,
   "annotation": {
-    "text": "ALLIANCE CONTRIBUTION RANKING\nMutual Assistance\nSiege Rare Soil War Defeat\nDaily RankingWeekly RankingSeason Total Ranking\nRanking\nName\nPoints\n1\n[PoWr] Doc Hollagoon 21,300\n2\n[PoWr] NotBlackice 9,600\n3\n[PoWr] LucasF Moraes 9,000\n4\n[PoWr] Crazy Carol\n9,000\nRewards\n5\n[PoWr] Shh mute\n9,000\n0\n\u0b6f\n56\nTO DODGER ST\n[PoWrl ezdough25\n7.500\n[PoWr] ShodiWarmic 1,500\n(B)\nX 1272\n\u05dd\u05d5\nLoot\nRecord",
+    "text": "ALLIANCE CONTRIBUTION RANKING\nMutual Assistance\nSiege Rare Soil War Defeat\nDaily RankingWeekly RankingSeason Total Ranking\nRanking\nName\nPoints\n1\n[PoWr] Doc Hollagoon 21,300\n2\n[PoWr] NotBlackice 9,600\n3\n[PoWr] LucasF Moraes 9,000\n4\n[PoWr] Crazy Carol\n9,000\nRewards\n5\n[PoWr] Shh mute\n9,000\n0\n୯\n56\nTO DODGER ST\n[PoWrl ezdough25\n7.500\n[PoWr] ShodiWarmic 1,500\n(B)\nX 1272\nםו\nLoot\nRecord",
     "pages": [
       {
         "blocks": [
@@ -7977,7 +7977,7 @@
                   {
                     "symbols": [
                       {
-                        "text": "\u0b6f",
+                        "text": "୯",
                         "bounding_box": {
                           "vertices": [
                             {
@@ -10266,7 +10266,7 @@
                   {
                     "symbols": [
                       {
-                        "text": "\u05dd",
+                        "text": "ם",
                         "bounding_box": {
                           "vertices": [
                             {
@@ -10289,7 +10289,7 @@
                         }
                       },
                       {
-                        "text": "\u05d5",
+                        "text": "ו",
                         "bounding_box": {
                           "vertices": [
                             {
@@ -12284,7 +12284,7 @@
       "avg_y": 1382.0
     },
     {
-      "text": "\u0b6f",
+      "text": "୯",
       "bbox": {
         "vertices": [
           {
@@ -12534,7 +12534,7 @@
       "avg_y": 1507.0
     },
     {
-      "text": "\u05dd\u05d5",
+      "text": "םו",
       "bbox": {
         "vertices": [
           {

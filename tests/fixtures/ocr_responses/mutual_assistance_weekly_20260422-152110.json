@@ -4,7 +4,7 @@
   "image_width": 1091,
   "image_height": 1840,
   "annotation": {
-    "text": "ALLIANCE CONTRIBUTION RANKING\nMutual Assistance\nSiege Rare Soil War Defeat\nDaily RankingWeekly Ranking Season Total Ranking\nRanking\nName\nPoints\n1\n[PoWr] Sheffie\n3,925,960\n2\n[PoWr] Ruthless5432 2,189,000\n3\n[PoWr] Splendiddragon 2,047,400\n4\n[PoWr] Skworl\n1,954,440\nRewards\n5\n[PoWr] Gustavodurr 1,923,000\n0\nD\n26\n[PoWrl RocketKi\n1.881.000\n[PoWr] ShodiWarmic 1,096,000\n(B)\nX 1272\n\u05dd\u05d5\nLoot\nRecord",
+    "text": "ALLIANCE CONTRIBUTION RANKING\nMutual Assistance\nSiege Rare Soil War Defeat\nDaily RankingWeekly Ranking Season Total Ranking\nRanking\nName\nPoints\n1\n[PoWr] Sheffie\n3,925,960\n2\n[PoWr] Ruthless5432 2,189,000\n3\n[PoWr] Splendiddragon 2,047,400\n4\n[PoWr] Skworl\n1,954,440\nRewards\n5\n[PoWr] Gustavodurr 1,923,000\n0\nD\n26\n[PoWrl RocketKi\n1.881.000\n[PoWr] ShodiWarmic 1,096,000\n(B)\nX 1272\nםו\nLoot\nRecord",
     "pages": [
       {
         "blocks": [
@@ -10396,7 +10396,7 @@
                   {
                     "symbols": [
                       {
-                        "text": "\u05dd",
+                        "text": "ם",
                         "bounding_box": {
                           "vertices": [
                             {
@@ -10419,7 +10419,7 @@
                         }
                       },
                       {
-                        "text": "\u05d5",
+                        "text": "ו",
                         "bounding_box": {
                           "vertices": [
                             {
@@ -12514,7 +12514,7 @@
       "avg_y": 1507.0
     },
     {
-      "text": "\u05dd\u05d5",
+      "text": "םו",
       "bbox": {
         "vertices": [
           {

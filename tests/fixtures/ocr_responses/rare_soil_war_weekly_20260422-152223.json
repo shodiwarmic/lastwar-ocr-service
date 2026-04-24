@@ -4,7 +4,7 @@
   "image_width": 1091,
   "image_height": 1840,
   "annotation": {
-    "text": "ALLIANCE CONTRIBUTION RANKING\nMutual Assistance\nSiege Rare Soil War\nDaily RankingWeekly Ranking Season Total Ranking\nRanking\nName\nPoints\n1\n[PoWr] TheDude Abides22 143,350\n2\n[PoWr] Dumptruck911 105,570\n3\nDefeat\nRewards\n\u65e5\n[PoWr] SirBucksALot 99,890\n\u65e5\n4\nYou gotta understand how\nwusdade chill annow.\n[PoWr] NotBlackice 60,000\n5\n[PoWr] TheMojoDude 34,500\n0\nD\n27\n[PoWrl Skworl\n27.000\n[PoWr] ShodiWarmic 12,390\n(B)\nX 1272\n\u05d7\u05d5\nLoot\nRecord",
+    "text": "ALLIANCE CONTRIBUTION RANKING\nMutual Assistance\nSiege Rare Soil War\nDaily RankingWeekly Ranking Season Total Ranking\nRanking\nName\nPoints\n1\n[PoWr] TheDude Abides22 143,350\n2\n[PoWr] Dumptruck911 105,570\n3\nDefeat\nRewards\n日\n[PoWr] SirBucksALot 99,890\n日\n4\nYou gotta understand how\nwusdade chill annow.\n[PoWr] NotBlackice 60,000\n5\n[PoWr] TheMojoDude 34,500\n0\nD\n27\n[PoWrl Skworl\n27.000\n[PoWr] ShodiWarmic 12,390\n(B)\nX 1272\nחו\nLoot\nRecord",
     "pages": [
       {
         "blocks": [
@@ -5827,7 +5827,7 @@
                   {
                     "symbols": [
                       {
-                        "text": "\u65e5",
+                        "text": "日",
                         "bounding_box": {
                           "vertices": [
                             {
@@ -6642,7 +6642,7 @@
                   {
                     "symbols": [
                       {
-                        "text": "\u65e5",
+                        "text": "日",
                         "bounding_box": {
                           "vertices": [
                             {
@@ -11517,7 +11517,7 @@
                   {
                     "symbols": [
                       {
-                        "text": "\u05d7",
+                        "text": "ח",
                         "bounding_box": {
                           "vertices": [
                             {
@@ -11540,7 +11540,7 @@
                         }
                       },
                       {
-                        "text": "\u05d5",
+                        "text": "ו",
                         "bounding_box": {
                           "vertices": [
                             {
@@ -12835,7 +12835,7 @@
       "avg_y": 678.5
     },
     {
-      "text": "\u65e5",
+      "text": "日",
       "bbox": {
         "vertices": [
           {
@@ -13010,7 +13010,7 @@
       "avg_y": 857.5
     },
     {
-      "text": "\u65e5",
+      "text": "日",
       "bbox": {
         "vertices": [
           {
@@ -13910,7 +13910,7 @@
       "avg_y": 1507.0
     },
     {
-      "text": "\u05d7\u05d5",
+      "text": "חו",
       "bbox": {
         "vertices": [
           {

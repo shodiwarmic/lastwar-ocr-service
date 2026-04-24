@@ -4,7 +4,7 @@
   "image_width": 1091,
   "image_height": 1840,
   "annotation": {
-    "text": "ALLIANCE CONTRIBUTION RANKING\nuads in one blow, achieving legendary success, praised server-wide!\nMutual Assistance\nSiege\nRare Soil War\nDaily RankingWeekly Ranking Season Total Ranking\nRanking\nName\nPoints\n1\n[PoWr] Doc Hollagoon 63,600\n2\n[PoWr] NotBlackice\n21,900\n3\n[PoWr] Crazy Carol\n19,200\n4\n[PoWr] SubZero221\n17,700\nDefeat\nRewards\n5\n[PoWr] Chief351\n16,800\n0\nD\n17\n[PoWrl Simnala2\n16.800\n[PoWr] ShodiWarmic 10,500\n(B)\nX 1272\n\u05dd\u05d5\nLoot\nRecord",
+    "text": "ALLIANCE CONTRIBUTION RANKING\nuads in one blow, achieving legendary success, praised server-wide!\nMutual Assistance\nSiege\nRare Soil War\nDaily RankingWeekly Ranking Season Total Ranking\nRanking\nName\nPoints\n1\n[PoWr] Doc Hollagoon 63,600\n2\n[PoWr] NotBlackice\n21,900\n3\n[PoWr] Crazy Carol\n19,200\n4\n[PoWr] SubZero221\n17,700\nDefeat\nRewards\n5\n[PoWr] Chief351\n16,800\n0\nD\n17\n[PoWrl Simnala2\n16.800\n[PoWr] ShodiWarmic 10,500\n(B)\nX 1272\nםו\nLoot\nRecord",
     "pages": [
       {
         "blocks": [
@@ -11893,7 +11893,7 @@
                   {
                     "symbols": [
                       {
-                        "text": "\u05dd",
+                        "text": "ם",
                         "bounding_box": {
                           "vertices": [
                             {
@@ -11916,7 +11916,7 @@
                         }
                       },
                       {
-                        "text": "\u05d5",
+                        "text": "ו",
                         "bounding_box": {
                           "vertices": [
                             {
@@ -14411,7 +14411,7 @@
       "avg_y": 1507.0
     },
     {
-      "text": "\u05dd\u05d5",
+      "text": "םו",
       "bbox": {
         "vertices": [
           {

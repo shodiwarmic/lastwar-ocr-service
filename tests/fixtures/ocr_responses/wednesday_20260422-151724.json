@@ -4,7 +4,7 @@
   "image_width": 1091,
   "image_height": 1840,
   "annotation": {
-    "text": "RANKING\nDaily Rank\nWeekly Rank\nMon.\nTues.\nWed.\nThur.\nFri.\nSat.\nRanking\nCommander\nPoints\nC4Diesel aka Batman\nPOWR\n1\n36,791,750\n[PoWr] Pantheon of Wrath\nSirBucksALot\n2\n30,311,750\n[PoWr] Pantheon of Wrath\n3\nB\nP\u00e0cha\n29,488,000\n[PoWr] Pantheon of Wrath\nDoc Hollagoon\n27,595,000\n[PoWr] Pantheon of Wrath\nCrazy Carol\n5\n[PoWr] Pantheon of Wrath\n25,221,053\nShodiWarmic\n26\n11,591,450\n[PoWr]Pantheon of Wrath\nYour Alliance",
+    "text": "RANKING\nDaily Rank\nWeekly Rank\nMon.\nTues.\nWed.\nThur.\nFri.\nSat.\nRanking\nCommander\nPoints\nC4Diesel aka Batman\nPOWR\n1\n36,791,750\n[PoWr] Pantheon of Wrath\nSirBucksALot\n2\n30,311,750\n[PoWr] Pantheon of Wrath\n3\nB\nPàcha\n29,488,000\n[PoWr] Pantheon of Wrath\nDoc Hollagoon\n27,595,000\n[PoWr] Pantheon of Wrath\nCrazy Carol\n5\n[PoWr] Pantheon of Wrath\n25,221,053\nShodiWarmic\n26\n11,591,450\n[PoWr]Pantheon of Wrath\nYour Alliance",
     "pages": [
       {
         "blocks": [
@@ -6033,7 +6033,7 @@
                         }
                       },
                       {
-                        "text": "\u00e0",
+                        "text": "à",
                         "bounding_box": {
                           "vertices": [
                             {
@@ -12614,7 +12614,7 @@
       "avg_y": 713.0
     },
     {
-      "text": "P\u00e0cha",
+      "text": "Pàcha",
       "bbox": {
         "vertices": [
           {

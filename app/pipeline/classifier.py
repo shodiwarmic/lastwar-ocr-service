@@ -723,23 +723,18 @@ def _detect_winner_in_ac_group(
     for tab in items:
         if not tab.signals:
             continue
-        # Find an OCR block matching any of this tab's signals.
-        match_block = None
-        for signal in tab.signals:
-            sig_words = signal.lower().split()
-            for block in text_blocks:
-                btext = block["text"].strip().lower()
-                if all(w in btext for w in sig_words):
-                    match_block = block
-                    break
-            if match_block:
-                break
-        if match_block is None:
+        # Locate the OCR-region this tab corresponds to. Two strategies:
+        #   1. Single-block match — a block whose text contains every word of
+        #      one of the tab's signals.
+        #   2. Multi-block match (fallback for OCR that splits a multi-word
+        #      signal across adjacent blocks on the same row, e.g.
+        #      "Season Total Ranking" rendered as separate "Season" / "Total"
+        #      / "Ranking" blocks). Returns the union bbox so colour sampling
+        #      covers the full pill background, not just one word's glyphs.
+        rect = _find_tab_region(tab, text_blocks)
+        if rect is None:
             continue
-
-        left, top, right, bottom = _bbox_to_pixel_coords(match_block.get("bbox"))
-        if left is None:
-            continue
+        left, top, right, bottom = rect
         crop = image.crop((
             max(0,     left  - pad),
             max(0,     top   - pad),
@@ -754,9 +749,13 @@ def _detect_winner_in_ac_group(
                 # Score is "1.0" — any orange match wins; ties broken in declaration order.
                 candidates.append((tab.category, 1.0))
         elif group_cfg.strategy == "brightest":
-            r, g, b = avg_rgb
-            _, _s, v = colorsys.rgb_to_hsv(r / 255.0, g / 255.0, b / 255.0)
-            candidates.append((tab.category, v))
+            # Count the fraction of near-white pixels in the crop. Active
+            # pill backgrounds are bright; inactive tabs are mostly dark
+            # text on a slightly-grey background. The fraction signal is
+            # sharper than averaging the whole crop's V — it doesn't get
+            # diluted by the (usually wider) bbox of multi-word matches
+            # like the union rect for "Season Total Ranking".
+            candidates.append((tab.category, _white_pixel_fraction(crop)))
 
     if not candidates:
         return None
@@ -776,3 +775,132 @@ def _detect_winner_in_ac_group(
             )
             return None
     return candidates[0][0]
+
+
+# White-pixel detection threshold for the period-row brightest strategy.
+# A pixel counts as "white" when every channel exceeds this. Calibrated
+# against alliance_contribution period sub-tab fixtures: active pill
+# backgrounds register ~50%+ near-white pixels, inactive ~5%.
+_WHITE_PIXEL_MIN_CHANNEL = 215
+
+
+def _white_pixel_fraction(crop: Image.Image) -> float:
+    """Returns the fraction of pixels in ``crop`` whose every RGB channel
+    exceeds _WHITE_PIXEL_MIN_CHANNEL — the canonical white-pill signal
+    used to disambiguate active vs inactive period sub-tabs.
+
+    Returns 0.0 for an empty crop. Converts to RGB internally.
+    """
+    rgb = crop.convert("RGB") if crop.mode != "RGB" else crop
+    pixels = list(rgb.getdata())
+    if not pixels:
+        return 0.0
+    threshold = _WHITE_PIXEL_MIN_CHANNEL
+    white = sum(1 for r, g, b in pixels if r > threshold and g > threshold and b > threshold)
+    return white / len(pixels)
+
+
+# Same-row tolerance for the multi-block signal match below — two text
+# blocks count as "on the same row" when their average-Y values are within
+# this fraction of either's bbox height. 0.6 is loose enough to handle
+# OCR's slight per-word baseline jitter without crossing into adjacent rows.
+_SAME_ROW_FRACTION = 0.6
+
+
+def _find_tab_region(tab, text_blocks: list[dict]) -> Optional[tuple[int, int, int, int]]:
+    """
+    Locate the OCR-text rectangle for ``tab``. Returns
+    (left, top, right, bottom) pixel coordinates or None.
+
+    Tries each of ``tab.signals`` in order. A signal matches when:
+
+      1. **Single-block** — some OCR block's text contains every word of
+         the signal (case-insensitive). The match block's bbox is returned.
+      2. **Multi-block fallback** (only for multi-word signals, only used
+         if no single block matched any signal) — for the signal's first
+         word, find every block containing it; for each, look on the same
+         OCR row for blocks containing each remaining word in the signal.
+         If all words are present on one row, return the union bbox of all
+         matched blocks.
+
+    The fallback is what makes the alliance_contribution Season Total
+    Ranking tab detectable: Cloud Vision often renders that label as three
+    separate word-blocks ("Season", "Total", "Ranking") rather than one,
+    so the single-block matcher silently misses it.
+    """
+    # Strategy 1 — single-block.
+    for signal in tab.signals:
+        sig_words = signal.lower().split()
+        for block in text_blocks:
+            btext = block["text"].strip().lower()
+            if all(w in btext for w in sig_words):
+                return _bbox_to_pixel_coords(block.get("bbox"))
+
+    # Strategy 2 — multi-block on the same row, in left-to-right reading order.
+    # Each subsequent word's block must sit to the right of the previous one
+    # so we don't accidentally pull in a same-named word from a different tab
+    # (e.g. the "Ranking" that belongs to "Weekly Ranking" when we're trying
+    # to match the "Ranking" in "Season Total Ranking").
+    for signal in tab.signals:
+        sig_words = signal.lower().split()
+        if len(sig_words) < 2:
+            continue
+        first_word = sig_words[0]
+        for first_block in text_blocks:
+            ftext = first_block["text"].strip().lower()
+            if first_word not in ftext:
+                continue
+            # Compute row tolerance in pixels from this block's bbox height.
+            f_left, f_top, f_right, f_bottom = _bbox_to_pixel_coords(first_block.get("bbox"))
+            if f_left is None:
+                continue
+            row_tol = max(8, int((f_bottom - f_top) * _SAME_ROW_FRACTION))
+            f_y = first_block["avg_y"]
+            # Track the right-edge of the previously-matched word — the next
+            # word's left edge must be at or beyond this (with a small slack
+            # to allow OCR jitter in adjacent-block boundaries).
+            row_slack = max(4, int(row_tol / 2))
+            min_next_left = f_right - row_slack
+            others: list[dict] = []
+            ok = True
+            for word in sig_words[1:]:
+                hit = None
+                hit_right = 0
+                for b in text_blocks:
+                    if b is first_block or b in others:
+                        continue
+                    if word not in b["text"].strip().lower():
+                        continue
+                    if abs(b["avg_y"] - f_y) > row_tol:
+                        continue
+                    bl, _bt, br, _bb = _bbox_to_pixel_coords(b.get("bbox"))
+                    if bl is None or bl < min_next_left:
+                        continue
+                    # Take the *closest-to-the-left* match of those eligible —
+                    # that's the next word in reading order.
+                    if hit is None or bl < hit_right:
+                        hit = b
+                        hit_right = bl
+                if hit is None:
+                    ok = False
+                    break
+                others.append(hit)
+                # Update min_next_left to this block's right edge.
+                _hl, _ht, hr, _hb = _bbox_to_pixel_coords(hit.get("bbox"))
+                if hr is not None:
+                    min_next_left = hr - row_slack
+            if not ok:
+                continue
+            # Union bbox of first_block + all `others`.
+            union_left, union_top = f_left, f_top
+            union_right, union_bottom = f_right, f_bottom
+            for o in others:
+                ol, ot, orr, ob = _bbox_to_pixel_coords(o.get("bbox"))
+                if ol is None:
+                    continue
+                union_left   = min(union_left,   ol)
+                union_top    = min(union_top,    ot)
+                union_right  = max(union_right,  orr)
+                union_bottom = max(union_bottom, ob)
+            return (union_left, union_top, union_right, union_bottom)
+    return None

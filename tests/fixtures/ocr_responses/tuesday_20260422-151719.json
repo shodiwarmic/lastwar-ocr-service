@@ -4,7 +4,7 @@
   "image_width": 1091,
   "image_height": 1840,
   "annotation": {
-    "text": "RANKING\nDaily Rank\nWeekly Rank\nMon.\nTues.\nWed.\nThur.\nFri.\nSat.\nRanking\nCommander\nPoints\nCrazy Carol\n\u0e08\n18,702,589\n[PoWr] Pantheon of Wrath\nN\nRepsalix\n[PoWr] Pantheon of Wrath\n16,437,900\nCrimson888\n3\n14,865,450\n[PoWr] Pantheon of Wrath\nRuthless5432\nB\n14,691,450\n[PoWr] Pantheon of Wrath\n5\nLucasF Moraes\n[PoWr] Pantheon of Wrath\n13,577,250\nShodiWarmic\n12\n11,750,850\n[PoWr]Pantheon of Wrath\nYour Alliance",
+    "text": "RANKING\nDaily Rank\nWeekly Rank\nMon.\nTues.\nWed.\nThur.\nFri.\nSat.\nRanking\nCommander\nPoints\nCrazy Carol\nจ\n18,702,589\n[PoWr] Pantheon of Wrath\nN\nRepsalix\n[PoWr] Pantheon of Wrath\n16,437,900\nCrimson888\n3\n14,865,450\n[PoWr] Pantheon of Wrath\nRuthless5432\nB\n14,691,450\n[PoWr] Pantheon of Wrath\n5\nLucasF Moraes\n[PoWr] Pantheon of Wrath\n13,577,250\nShodiWarmic\n12\n11,750,850\n[PoWr]Pantheon of Wrath\nYour Alliance",
     "pages": [
       {
         "blocks": [
@@ -2979,7 +2979,7 @@
                   {
                     "symbols": [
                       {
-                        "text": "\u0e08",
+                        "text": "จ",
                         "bounding_box": {
                           "vertices": [
                             {
@@ -11860,7 +11860,7 @@
       "avg_y": 501.5
     },
     {
-      "text": "\u0e08",
+      "text": "จ",
       "bbox": {
         "vertices": [
           {

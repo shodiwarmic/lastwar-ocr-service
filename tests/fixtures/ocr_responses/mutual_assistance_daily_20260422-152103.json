@@ -4,7 +4,7 @@
   "image_width": 1091,
   "image_height": 1840,
   "annotation": {
-    "text": "ALLIANCE CONTRIBUTION RANKING\nMutual Assistance\nSiege Rare Soil War Defeat\nDaily RankingWeekly RankingSeason Total Ranking\nRanking\nName\nPoints\n1\n[PoWr] Sheffie\n1,282,000\n2\n[PoWr] Ruthless54321,058,000\n3\n[PoWr] Splendiddragon 1,019,400\n4\n[PoWr] Gustavodurr 853,000\n5\nD\n17\nRewards\nHOW TO CATCH\nCANADIAN\n[PoWr] Old Red Patcher 829,000\n0\n[PoWrl RocketKi\n705.000\n[PoWr] ShodiWarmic 549,000\n(B)\nX 1272\n\u05d7\u05d5\nLoot\nRecord",
+    "text": "ALLIANCE CONTRIBUTION RANKING\nMutual Assistance\nSiege Rare Soil War Defeat\nDaily RankingWeekly RankingSeason Total Ranking\nRanking\nName\nPoints\n1\n[PoWr] Sheffie\n1,282,000\n2\n[PoWr] Ruthless54321,058,000\n3\n[PoWr] Splendiddragon 1,019,400\n4\n[PoWr] Gustavodurr 853,000\n5\nD\n17\nRewards\nHOW TO CATCH\nCANADIAN\n[PoWr] Old Red Patcher 829,000\n0\n[PoWrl RocketKi\n705.000\n[PoWr] ShodiWarmic 549,000\n(B)\nX 1272\nחו\nLoot\nRecord",
     "pages": [
       {
         "blocks": [
@@ -10931,7 +10931,7 @@
                   {
                     "symbols": [
                       {
-                        "text": "\u05d7",
+                        "text": "ח",
                         "bounding_box": {
                           "vertices": [
                             {
@@ -10954,7 +10954,7 @@
                         }
                       },
                       {
-                        "text": "\u05d5",
+                        "text": "ו",
                         "bounding_box": {
                           "vertices": [
                             {
@@ -13149,7 +13149,7 @@
       "avg_y": 1507.0
     },
     {
-      "text": "\u05d7\u05d5",
+      "text": "חו",
       "bbox": {
         "vertices": [
           {

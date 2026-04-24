@@ -4,7 +4,7 @@
   "image_width": 1091,
   "image_height": 1840,
   "annotation": {
-    "text": "ALLIANCE CONTRIBUTION RANKING\nMutual Assistance\nSiege Rare Soil War Defeat\nDaily RankingWeekly Ranking Season Total Ranking\nRanking\nName\nPoints\n1\n[PoWr] SirBucksALot26,893,044\n2\n[PoWr] TheDudeAbides2214,899,641\n3\n[PoWr] Dumptruck91112,519,990\n4\n[PoWr] TheMojoDude 5,669,901\nRewards\n5\n[PoWr] pudgey27 4,331,547\n0\nD\n[PoWrl Cloud FF7 3.792.420\n9\n[PoWr] ShodiWarmic 3,001,167\n(B)\nX 1272\n\u05d7\u05d5\nLoot\nRecord",
+    "text": "ALLIANCE CONTRIBUTION RANKING\nMutual Assistance\nSiege Rare Soil War Defeat\nDaily RankingWeekly Ranking Season Total Ranking\nRanking\nName\nPoints\n1\n[PoWr] SirBucksALot26,893,044\n2\n[PoWr] TheDudeAbides2214,899,641\n3\n[PoWr] Dumptruck91112,519,990\n4\n[PoWr] TheMojoDude 5,669,901\nRewards\n5\n[PoWr] pudgey27 4,331,547\n0\nD\n[PoWrl Cloud FF7 3.792.420\n9\n[PoWr] ShodiWarmic 3,001,167\n(B)\nX 1272\nחו\nLoot\nRecord",
     "pages": [
       {
         "blocks": [
@@ -10434,7 +10434,7 @@
                   {
                     "symbols": [
                       {
-                        "text": "\u05d7",
+                        "text": "ח",
                         "bounding_box": {
                           "vertices": [
                             {
@@ -10457,7 +10457,7 @@
                         }
                       },
                       {
-                        "text": "\u05d5",
+                        "text": "ו",
                         "bounding_box": {
                           "vertices": [
                             {
@@ -12502,7 +12502,7 @@
       "avg_y": 1507.0
     },
     {
-      "text": "\u05d7\u05d5",
+      "text": "חו",
       "bbox": {
         "vertices": [
           {
