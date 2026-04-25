@@ -2,7 +2,12 @@
 
 ## What this service does
 
-Flask microservice deployed on Google Cloud Run. Accepts batches of *Last War: Survival* ranking screenshots (multipart POST), runs Google Cloud Vision OCR, and returns structured JSON of player names and scores.
+Flask microservice that ingests batches of *Last War: Survival* ranking screenshots (multipart POST) and returns structured JSON of player names and scores. Two deployment modes:
+
+- **Cloud (default)** — Google Cloud Vision via OIDC on Cloud Run. Auto-detects the active screen + tab from OCR text. Built from `Dockerfile`.
+- **Local sidecar** — PaddleOCR running in a self-hosted Docker container, no Cloud Vision dependency. Built from `Dockerfile.local`. Caller must supply `category` to skip auto-classification because PaddleOCR's English model can't reliably read Last War's stylised header text. See [`LOCAL_OCR_POC.md`](file:///home/shodi/lastwar-screenshots/LOCAL_OCR_POC.md) for the calibration findings.
+
+Engine is selected at runtime by the `OCR_ENGINE` environment variable (`cloud_vision` default, `paddleocr` for the local image). `app/pipeline/ocr_client.py` is the dispatch layer; `ocr_client_paddle.py` is the PaddleOCR implementation.
 
 **Single endpoint:** `POST /process-batch` — accepts `images[]` (up to 100 files), returns:
 ```json
