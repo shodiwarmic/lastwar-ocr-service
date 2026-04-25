@@ -11,7 +11,11 @@ name: Build and Publish Docker Images
 
 on:
   push:
-    branches: ['main']
+    # `align-screen-definitions-contract` is included so the build can
+    # be verified end-to-end before merging the parent PR. Remove this
+    # branch from the list once the PR is merged so the workflow only
+    # runs from main going forward.
+    branches: ['main', 'align-screen-definitions-contract']
   # Allow manual rebuilds (e.g. after tweaking a Dockerfile without
   # touching code) from the GitHub UI.
   workflow_dispatch:
