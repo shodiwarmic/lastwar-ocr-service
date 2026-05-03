@@ -122,7 +122,7 @@ class TestProcessBatchValidation:
         assert response.status_code == 400
 
     def test_too_many_images_returns_400(self, client):
-        files = [png_file_storage(f"img{i}.png") for i in range(25)]
+        files = [png_file_storage(f"img{i}.png") for i in range(101)]
         response = client.post(
             "/process-batch",
             content_type="multipart/form-data",
@@ -131,14 +131,56 @@ class TestProcessBatchValidation:
         assert response.status_code == 400
         assert "Too many images" in response.get_json()["error"]
 
+    def test_unknown_category_returns_400(self, client):
+        response = client.post(
+            "/process-batch",
+            content_type="multipart/form-data",
+            data={"images": png_file_storage("test.png"), "category": "not_a_real_category"},
+        )
+        assert response.status_code == 400
+        data = response.get_json()
+        assert "error" in data
+        assert "not_a_real_category" in data["error"]
+
+    @pytest.mark.parametrize("category", [
+        "mutual_assistance_daily", "mutual_assistance_weekly", "mutual_assistance_season",
+        "siege_daily",             "siege_weekly",             "siege_season",
+        "rare_soil_war_daily",     "rare_soil_war_weekly",     "rare_soil_war_season",
+        "defeat_daily",            "defeat_weekly",            "defeat_season",
+    ])
+    def test_all_season_contribution_categories_accepted(self, client, category):
+        """All 12 season contribution category keys must pass validation."""
+        # We only test that the category is accepted (not rejected with 400).
+        # OCR is mocked to return no blocks so the response will be a 200 warning.
+        with patch("app.routes.run_ocr") as mock_ocr, \
+             patch("app.routes.extract_text_blocks") as mock_blocks:
+            mock_ocr.return_value = (MagicMock(), "hash_ac")
+            mock_blocks.return_value = []
+            response = client.post(
+                "/process-batch",
+                content_type="multipart/form-data",
+                data={"images": png_file_storage("test.png"), "category": category},
+            )
+        # 400 would mean the category was rejected; any other status is fine here
+        assert response.status_code != 400 or "Unknown category" not in response.get_json().get("error", "")
+
 
 # ---------------------------------------------------------------------------
 # Successful processing (mocked OCR)
 # ---------------------------------------------------------------------------
 
+@pytest.fixture(autouse=True)
+def clear_route_cache():
+    """Clear the in-memory result cache before and after each test."""
+    import app.routes as routes_module
+    routes_module._result_cache.clear()
+    yield
+    routes_module._result_cache.clear()
+
+
 class TestProcessBatchMocked:
 
-    @patch("app.routes.classify_screenshot")
+    @patch("app.routes.classify_from_ocr_text")
     @patch("app.routes.run_ocr")
     @patch("app.routes.extract_text_blocks")
     @patch("app.routes.extract_players")
@@ -154,7 +196,7 @@ class TestProcessBatchMocked:
 
         mock_classify.return_value = ("friday", 0.95)
         mock_ocr.return_value = (MagicMock(), "hash_abc")
-        mock_text_blocks.return_value = []
+        mock_text_blocks.return_value = [{"text": "x", "bbox": {}, "avg_x": 100.0, "avg_y": 1200.0}]
         mock_extract.return_value = [
             PlayerEntry(player_name="SirBucksALot", score=45_635_206)
         ]
@@ -171,7 +213,7 @@ class TestProcessBatchMocked:
         assert data["friday"][0]["player_name"] == "SirBucksALot"
         assert data["friday"][0]["score"] == 45_635_206
 
-    @patch("app.routes.classify_screenshot")
+    @patch("app.routes.classify_from_ocr_text")
     @patch("app.routes.run_ocr")
     @patch("app.routes.extract_text_blocks")
     @patch("app.routes.extract_players")
@@ -185,7 +227,7 @@ class TestProcessBatchMocked:
     ):
         mock_classify.return_value = ("friday", 0.95)
         mock_ocr.return_value = (MagicMock(), "hash_xyz")
-        mock_text_blocks.return_value = []
+        mock_text_blocks.return_value = [{"text": "x", "bbox": {}, "avg_x": 100.0, "avg_y": 1200.0}]
         mock_extract.return_value = []
 
         response = client.post(
@@ -198,7 +240,138 @@ class TestProcessBatchMocked:
         data = response.get_json()
         assert "warning" in data
 
-    @patch("app.routes.classify_screenshot")
+    @patch("app.routes.run_ocr")
+    @patch("app.routes.extract_text_blocks")
+    @patch("app.routes.extract_players")
+    def test_category_override_bypasses_classifier(
+        self,
+        mock_extract,
+        mock_text_blocks,
+        mock_ocr,
+        client,
+    ):
+        """When category= is supplied, classify_from_ocr_text must never be called."""
+        from app.models.schemas import PlayerEntry
+        from unittest.mock import patch as _patch
+
+        mock_ocr.return_value = (MagicMock(), "hash_override")
+        mock_text_blocks.return_value = [{"text": "x", "bbox": {}, "avg_x": 100.0, "avg_y": 1200.0}]
+        mock_extract.return_value = [
+            PlayerEntry(player_name="DocHollagoon", score=21_000)
+        ]
+
+        with _patch("app.routes.classify_from_ocr_text") as mock_classify:
+            response = client.post(
+                "/process-batch",
+                content_type="multipart/form-data",
+                data={"images": png_file_storage("siege.png"), "category": "siege_daily"},
+            )
+            mock_classify.assert_not_called()
+
+        assert response.status_code == 200
+        data = response.get_json()
+        assert "siege_daily" in data
+        assert data["siege_daily"][0]["player_name"] == "DocHollagoon"
+
+    @patch("app.routes.run_ocr")
+    @patch("app.routes.extract_text_blocks")
+    @patch("app.routes.extract_players")
+    def test_category_override_routes_under_correct_key(
+        self,
+        mock_extract,
+        mock_text_blocks,
+        mock_ocr,
+        client,
+    ):
+        """Results must be filed under the caller-supplied key, not a classified key."""
+        from app.models.schemas import PlayerEntry
+
+        mock_ocr.return_value = (MagicMock(), "hash_key")
+        mock_text_blocks.return_value = [{"text": "x", "bbox": {}, "avg_x": 100.0, "avg_y": 1200.0}]
+        mock_extract.return_value = [PlayerEntry(player_name="ShodiWarmic", score=4_500)]
+
+        for category in ("mutual_assistance_daily", "rare_soil_war_season", "defeat_weekly"):
+            from app.routes import _result_cache
+            _result_cache.clear()
+            response = client.post(
+                "/process-batch",
+                content_type="multipart/form-data",
+                data={"images": png_file_storage("test.png"), "category": category},
+            )
+            assert response.status_code == 200
+            data = response.get_json()
+            assert category in data, f"Expected key '{category}' in response"
+
+    @patch("app.routes.run_ocr")
+    @patch("app.routes.extract_text_blocks")
+    @patch("app.routes.extract_players")
+    def test_candidates_field_present_in_response(
+        self,
+        mock_extract,
+        mock_text_blocks,
+        mock_ocr,
+        client,
+    ):
+        """candidates field must appear in response JSON for ambiguous crash rows."""
+        from app.models.schemas import PlayerEntry, ScoreCandidate
+
+        mock_ocr.return_value = (MagicMock(), "hash_cand")
+        mock_text_blocks.return_value = [{"text": "x", "bbox": {}, "avg_x": 100.0, "avg_y": 1200.0}]
+        mock_extract.return_value = [
+            PlayerEntry(
+                player_name="Ruthless5432",
+                score=3_045_000,
+                candidates=[
+                    ScoreCandidate(player_name="Ruthless5432", score=3_045_000),
+                    ScoreCandidate(player_name="Ruthless543",  score=23_045_000),
+                    ScoreCandidate(player_name="Ruthless54",   score=323_045_000),
+                ],
+            )
+        ]
+
+        with patch("app.routes.classify_from_ocr_text", return_value=("mutual_assistance_weekly", 1.0)):
+            response = client.post(
+                "/process-batch",
+                content_type="multipart/form-data",
+                data={"images": png_file_storage("test.png")},
+            )
+
+        assert response.status_code == 200
+        data = response.get_json()
+        entry = data["mutual_assistance_weekly"][0]
+        assert entry["player_name"] == "Ruthless5432"
+        assert "candidates" in entry
+        assert len(entry["candidates"]) == 3
+        assert entry["candidates"][0] == {"player_name": "Ruthless5432", "score": 3_045_000}
+
+    @patch("app.routes.run_ocr")
+    @patch("app.routes.extract_text_blocks")
+    @patch("app.routes.extract_players")
+    def test_candidates_absent_for_clean_rows(
+        self,
+        mock_extract,
+        mock_text_blocks,
+        mock_ocr,
+        client,
+    ):
+        """candidates must be absent (not null) for unambiguous rows."""
+        from app.models.schemas import PlayerEntry
+
+        mock_ocr.return_value = (MagicMock(), "hash_clean")
+        mock_text_blocks.return_value = [{"text": "x", "bbox": {}, "avg_x": 100.0, "avg_y": 1200.0}]
+        mock_extract.return_value = [PlayerEntry(player_name="Sheffie", score=3_779_860)]
+
+        with patch("app.routes.classify_from_ocr_text", return_value=("mutual_assistance_weekly", 1.0)):
+            response = client.post(
+                "/process-batch",
+                content_type="multipart/form-data",
+                data={"images": png_file_storage("test.png")},
+            )
+
+        entry = response.get_json()["mutual_assistance_weekly"][0]
+        assert "candidates" not in entry
+
+    @patch("app.routes.classify_from_ocr_text")
     @patch("app.routes.run_ocr")
     @patch("app.routes.extract_text_blocks")
     @patch("app.routes.extract_players")
@@ -214,7 +387,7 @@ class TestProcessBatchMocked:
 
         call_count = 0
 
-        def classify_side_effect(image, filename=""):
+        def classify_side_effect(text_blocks, image=None, filename=""):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -228,7 +401,10 @@ class TestProcessBatchMocked:
 
         mock_classify.side_effect = classify_side_effect
         mock_ocr.return_value = (MagicMock(), "hash_multi")
-        mock_text_blocks.return_value = []
+        mock_text_blocks.return_value = [
+            {"text": "d1", "bbox": {}, "avg_x": 100.0, "avg_y": 1200.0},
+            {"text": "d2", "bbox": {}, "avg_x": 100.0, "avg_y": 3610.0},
+        ]
         mock_extract.side_effect = extract_side_effect
 
         response = client.post(
@@ -251,24 +427,43 @@ class TestProcessBatchMocked:
 # ---------------------------------------------------------------------------
 
 _FILENAME_TO_CATEGORY = {
-    "monday":    "monday",
-    "tuesday":   "tuesday",
-    "wednesday": "wednesday",
-    "thursday":  "thursday",
-    "friday":    "friday",
-    "saturday":  "saturday",
-    "weekly":    "weekly",
-    "power":     "power",
-    "strength":  "power",
+    "monday":                    "monday",
+    "tuesday":                   "tuesday",
+    "wednesday":                 "wednesday",
+    "thursday":                  "thursday",
+    "friday":                    "friday",
+    "saturday":                  "saturday",
+    "weekly":                    "weekly",
+    "power":                     "power",
+    "strength":                  "power",
+    "kills":                     "kills",
+    "donation_daily":            "donation_daily",
+    "donation_weekly":           "donation_weekly",
+    "mutual_assistance_daily":   "mutual_assistance_daily",
+    "mutual_assistance_weekly":  "mutual_assistance_weekly",
+    "mutual_assistance_season":  "mutual_assistance_season",
+    "siege_daily":               "siege_daily",
+    "siege_weekly":              "siege_weekly",
+    "siege_season":              "siege_season",
+    "rare_soil_war_daily":       "rare_soil_war_daily",
+    "rare_soil_war_weekly":      "rare_soil_war_weekly",
+    "rare_soil_war_season":      "rare_soil_war_season",
+    "defeat_daily":              "defeat_daily",
+    "defeat_weekly":             "defeat_weekly",
+    "defeat_season":             "defeat_season",
 }
 
 
 def _infer_category(fixture_name: str):
+    """Longest-match-wins so e.g. `siege_weekly_*` resolves to `siege_weekly`
+    rather than the generic `weekly`. See test_classifier.py for the same
+    behaviour applied to its parallel inferrer."""
     lower = fixture_name.lower()
-    for keyword, category in _FILENAME_TO_CATEGORY.items():
-        if keyword in lower:
-            return category
-    return None
+    matches = [(k, v) for k, v in _FILENAME_TO_CATEGORY.items() if k in lower]
+    if not matches:
+        return None
+    matches.sort(key=lambda kv: -len(kv[0]))
+    return matches[0][1]
 
 
 def _discovered_fixtures():
@@ -303,8 +498,9 @@ class TestProcessBatchRealFixtures:
         mock_ann.pages = []
 
         # Use the real screenshot if available so colour-based classification
-        # works correctly. Fall back to a synthetic PNG if not found — in that
-        # case Pass 1 will be ambiguous and Pass 2 text scoring takes over.
+        # works correctly. Fall back to a synthetic PNG if not found — in
+        # that case the text-scoring fallback inside classify_from_ocr_text
+        # takes over.
         image_file = _real_image_or_synthetic(fixture_data.get("source_file", ""), fixture_name)
 
         with patch("app.routes.run_ocr", return_value=(mock_ann, fixture_data["image_hash"])):
@@ -340,16 +536,25 @@ def _real_image_or_synthetic(source_file: str, fixture_name: str) -> FileStorage
     ]
 
     for directory in search_dirs:
+        if not directory.is_dir():
+            continue
         for name in [source_file, f"{fixture_name}.png"]:
             if not name:
                 continue
-            candidate = directory / name
-            if candidate.exists():
-                return FileStorage(
-                    stream=io.BytesIO(candidate.read_bytes()),
-                    filename=name,
-                    content_type="image/png",
-                )
+            # Walk subdirectories — lastwar-screenshots is now organised by
+            # device/configuration (pixel_10_pro_xl/, pixel_fold_*/) rather
+            # than a flat layout.
+            candidates = [directory / name, *directory.rglob(name)]
+            for candidate in candidates:
+                if candidate.is_file():
+                    # Route tests pass the original bytes through the real
+                    # pipeline (stitcher crops letterboxed frames). No need
+                    # to pre-crop here — the stitcher will.
+                    return FileStorage(
+                        stream=io.BytesIO(candidate.read_bytes()),
+                        filename=name,
+                        content_type="image/png",
+                    )
 
     # Real screenshot not found — fall back to synthetic
     return png_file_storage(f"{fixture_name}.png")

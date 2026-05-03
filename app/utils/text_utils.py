@@ -35,6 +35,15 @@ _RBADGE_RE = re.compile(r"\bR[1-5]\b")
 # Score string: digits optionally separated by commas (e.g. "161,528,090")
 _SCORE_RE = re.compile(r"^[\d,]+$")
 
+# Comma-grouped number fragment — used by split_name_score_crash to detect
+# a score embedded at the tail of a merged name+score OCR token. The pattern
+# itself is defined in screen-definitions/constants.yaml under
+# `crash_tokens.score_suffix_pattern` so that both consumers (this service
+# and the Android scanner) use the same regex. Compiled once at import time
+# for hot-path performance.
+from app.utils.constants import crash_tokens as _crash_tokens
+_COMMA_GROUPED_NUMBER_RE = re.compile(_crash_tokens().score_suffix_pattern)
+
 # Stray non-alphanumeric characters that are clearly OCR noise.
 # Keeps spaces, hyphens, underscores, apostrophes, and extended Latin/Cyrillic
 # so accented names like Pàcha are preserved.
@@ -75,10 +84,19 @@ _ALLIANCE_SUFFIX_RES = [
 # (e.g. PoWr, CoRe, TaGs) rather than hardcoding specific alliance names.
 def _looks_like_tag(token: str) -> bool:
     """Returns True if a token matches the alliance abbreviation pattern."""
-    if not 2 <= len(token) <= 6:
+    # Game constraint: alliance tags are exactly 3–4 alphanumeric characters.
+    # Keeping this tight prevents 6-char player names like "SayTin" or "100Max"
+    # from being misidentified as bare tag tokens.
+    if not 3 <= len(token) <= 4:
         return False
-    # Must have at least one uppercase letter after position 0
-    return any(c.isupper() for c in token[1:])
+    # Must have at least one uppercase letter after position 0 (internal uppercase,
+    # e.g. "PoWr", "CoRe") AND at least one lowercase letter.  This distinguishes
+    # CamelCase alliance abbreviations from all-caps tokens like "FF7" or "II"
+    # that are legitimate components of player names.
+    return (
+        any(c.isupper() for c in token[1:])
+        and any(c.islower() for c in token)
+    )
 
 
 # Day tab label to output key mapping
@@ -291,14 +309,15 @@ def clean_player_name(raw_name: str) -> str:
     Full name cleaning pipeline in order of operation.
 
     Applies all cleaning steps in sequence:
-    1. Strip alliance tags     (e.g. [PoWr])
-    2. Strip bare tag tokens   (e.g. PoWr without brackets)
-    3. Strip alliance suffixes (e.g. "Pantheon of Wrath")
-    4. Strip leading rank      (e.g. "48 ")
-    5. Strip R-badge tokens    (e.g. R4)
-    6. Strip Thai characters   (OCR noise from rank badge icons)
-    7. Strip OCR noise         (stray symbols)
-    8. Collapse whitespace
+    1. Truncate before first '[' when name precedes tag
+    2. Strip bracketed alliance tags  (e.g. [PoWr])
+    3. Strip bare tag tokens          (e.g. PoWr without brackets)
+    4. Strip alliance suffixes        (e.g. "Pantheon of Wrath")
+    5. Strip leading rank             (e.g. "48 ")
+    6. Strip R-badge tokens           (e.g. R4)
+    7. Strip Thai characters          (OCR noise from rank badge icons)
+    8. Strip OCR noise                (stray symbols)
+    9. Collapse whitespace
 
     Args:
         raw_name: Unprocessed name string direct from OCR output.
@@ -318,6 +337,7 @@ def clean_player_name(raw_name: str) -> str:
     _before_bracket = raw_name.split('[')[0].strip()
     _after_noise = re.sub(r'^[\d\s\.R1-5]+', '', _before_bracket).strip()
     name = _before_bracket if _after_noise else raw_name
+    name = strip_alliance_tag(name)    # handles [TAG] / (TAG) when tag precedes name
     name = strip_bare_tags(name)
     name = strip_alliance_suffixes(name)
     name = strip_leading_rank(name)
@@ -326,6 +346,56 @@ def clean_player_name(raw_name: str) -> str:
     name = strip_ocr_noise(name)
     name = collapse_whitespace(name)
     return name
+
+
+def split_name_score_crash(text: str) -> Optional[tuple[str, str]]:
+    """
+    Attempts to split a merged name+score OCR token into (name_prefix, score_str).
+
+    When a player name ends in one or more digits and the score immediately
+    follows with no separating space, Vision API may return them as a single
+    block, e.g. "Ruthless54323,045,000" or "CheeseKillers22,622,000".
+
+    Strategy:
+        Scan right-to-left through the string looking for the rightmost
+        start position where a valid comma-grouped number runs to the end
+        of the string (e.g. "3,045,000") AND the text to the left contains
+        no commas (player names never contain commas; commas only appear in
+        score strings).  The rightmost qualifying start maximises the name
+        prefix and gives the most specific score.
+
+    Only applied to tokens that contain at least one letter — pure numeric
+    tokens are handled by is_numeric_token / parse_score directly.
+
+    Args:
+        text: A single OCR token string, stripped of surrounding whitespace.
+
+    Returns:
+        (name_prefix, score_str) tuple, or None if no embedded score found.
+
+    Examples:
+        split_name_score_crash("Ruthless54323,045,000")  → ("Ruthless5432", "3,045,000")
+        split_name_score_crash("CheeseKillers22,622,000") → ("CheeseKillers2", "2,622,000")
+        split_name_score_crash("Splendiddragon2,552,780") → ("Splendiddragon", "2,552,780")
+        split_name_score_crash("3,045,000")               → None  (pure numeric)
+        split_name_score_crash("ShodiWarmic")             → None  (no score suffix)
+    """
+    if not any(c.isalpha() for c in text):
+        return None  # Pure numeric — handled by is_numeric_token / parse_score
+
+    # Scan right-to-left: find the rightmost position where a valid
+    # comma-grouped number is anchored at the end of the string, with no
+    # comma in the name prefix (commas are score-only in this context).
+    for start in range(len(text) - 1, -1, -1):
+        if not text[start].isdigit():
+            continue
+        candidate = text[start:]
+        if _COMMA_GROUPED_NUMBER_RE.fullmatch(candidate):
+            name_prefix = text[:start].strip()
+            if "," not in name_prefix:
+                return name_prefix, candidate
+
+    return None
 
 
 def is_numeric_token(s: str) -> bool:
@@ -374,6 +444,47 @@ def parse_score(raw_score: str) -> Optional[int]:
         return int(cleaned)
     except ValueError:
         return None
+
+
+def all_crash_splits(text: str) -> list[tuple[str, str]]:
+    """
+    Returns every valid (name_prefix, score_str) split for a crash token,
+    ordered by ascending score value (smallest first).
+
+    The first entry matches the rightmost-split heuristic used by
+    split_name_score_crash (i.e. the heuristic result is always index 0).
+    Larger alternatives follow, enabling a caller to try progressively bigger
+    scores until one fits within known monotonicity bounds.
+
+    Returns an empty list for pure-numeric tokens or tokens with no embedded
+    comma-grouped score.
+
+    Examples:
+        all_crash_splits("Ruthless54323,045,000")
+            → [("Ruthless5432", "3,045,000"),
+               ("Ruthless543",  "23,045,000"),
+               ("Ruthless54",   "323,045,000")]
+    """
+    if not any(c.isalpha() for c in text):
+        return []
+
+    results: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    for start in range(len(text) - 1, -1, -1):
+        if not text[start].isdigit():
+            continue
+        candidate = text[start:]
+        if _COMMA_GROUPED_NUMBER_RE.fullmatch(candidate):
+            name_prefix = text[:start].strip()
+            if "," not in name_prefix:
+                entry = (name_prefix, candidate)
+                if entry not in seen:
+                    seen.add(entry)
+                    results.append(entry)
+
+    results.sort(key=lambda x: parse_score(x[1]) or 0)
+    return results
 
 
 def normalize_day_label(raw_label: str) -> Optional[str]:

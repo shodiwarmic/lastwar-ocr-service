@@ -2,13 +2,21 @@
 
 ## What this service does
 
-Flask microservice deployed on Google Cloud Run. Accepts batches of *Last War: Survival* ranking screenshots (multipart POST), runs Google Cloud Vision OCR, and returns structured JSON of player names and scores.
+Flask microservice that ingests batches of *Last War: Survival* ranking screenshots (multipart POST) and returns structured JSON of player names and scores. Two deployment modes:
+
+- **Cloud (default)** — Google Cloud Vision via OIDC on Cloud Run. Auto-detects the active screen + tab from OCR text. Built from `Dockerfile`.
+- **Local sidecar** — PaddleOCR running in a self-hosted Docker container, no Cloud Vision dependency. Built from `Dockerfile.local`. Caller must supply `category` to skip auto-classification because PaddleOCR's English model can't reliably read Last War's stylised header text. See [`LOCAL_OCR_POC.md`](file:///home/shodi/lastwar-screenshots/LOCAL_OCR_POC.md) for the calibration findings.
+
+Engine is selected at runtime by the `OCR_ENGINE` environment variable (`cloud_vision` default, `paddleocr` for the local image). `app/pipeline/ocr_client.py` is the dispatch layer; `ocr_client_paddle.py` is the PaddleOCR implementation.
 
 **Single endpoint:** `POST /process-batch` — accepts `images[]` (up to 100 files), returns:
 ```json
 {
-  "friday":  [{"player_name": "ShodiWarmic", "score": 161528090}],
-  "power":   [{"player_name": "SirBucksALot", "score": 218478394}]
+  "friday":          [{"player_name": "ShodiWarmic",      "score": 161528090}],
+  "power":           [{"player_name": "SirBucksALot",     "score": 218478394}],
+  "kills":           [{"player_name": "Charlie9042",      "score": 17886167}],
+  "donation_daily":  [{"player_name": "BlackIce2",        "score": 14800}],
+  "donation_weekly": [{"player_name": "CaptTrickster727", "score": 28300}]
 }
 ```
 Only categories with data are included. Health check: `GET /health`.
@@ -17,23 +25,37 @@ Only categories with data are included. Health check: `GET /health`.
 
 ## Pipeline (in order)
 
-1. **Classify** (`app/pipeline/classifier.py`) — two-pass:
-   - Pass 1: colour-sample the tab bar at fixed fractions to detect orange active tab (fast, no API call)
-   - Pass 2 (fallback): run OCR individually, then use bounding-box colour sampling of day tab crops
-2. **Stitch** (`app/pipeline/stitcher.py`) — group by `(category, width, height)`, crop UI chrome from interior boundaries, concatenate vertically → 1 Vision API call per group instead of per image
-3. **OCR** (`app/pipeline/ocr_client.py`) — `document_text_detection` (not `text_detection`); returns word-level blocks with bounding boxes
-4. **Extract** (`app/pipeline/extractor.py`) — score-anchored row clustering: find numeric tokens ≥ 1,000, collect name tokens in a 50px-upward / 5px-downward band, reconstruct name with gap-based space insertion
-5. **Clean** (`app/utils/text_utils.py`) — strip alliance tags `[PoWr]`, bare tag tokens, alliance display names, leading rank numbers, R-badge artefacts (R1–R5), Thai OCR noise, stray symbols
+1. **Stitch** (`app/pipeline/stitcher.py`) — group by resolution `(width, height)`, concatenate vertically with 10 px black separators, recording each source image's Y-range as an `ImageRegion`. Recursively bisects if the stitched image exceeds 20 MB or 75 MP.
+2. **OCR** (`app/pipeline/ocr_client.py`) — one `document_text_detection` call per stitched group (not `text_detection`); returns word-level blocks with bounding boxes in the stitched image's coordinate space.
+3. **Classify** (`app/pipeline/classifier.py`) — per `ImageRegion`, filter OCR blocks to that Y-range, then two-pass classification:
+   - Pass 1: colour-sample the tab bar using positions from the screen definition (`pre_ocr_hint`, `tabs.items[].x_hint`)
+   - Pass 2 (fallback): OCR text markers from `page_signals` / `negative_signals` + bounding-box colour sampling of the active tab crop
+4. **Extract** (`app/pipeline/extractor.py`) — score-anchored row clustering driven by the screen definition's `row_clustering` config: find numeric tokens ≥ `min_score`, collect name tokens within `up_band_fraction` × `image_height` above the score, reconstruct name with gap-based space insertion
+5. **Clean** (`app/utils/text_utils.py`) — strip alliance tags `[PoWr]`, bare tag tokens (CamelCase, 2–6 chars with a lowercase letter), alliance display names, leading rank numbers, R-badge artefacts (R1–R5), Thai OCR noise, stray symbols
+
+---
+
+## Screen definitions
+
+`app/screen_definitions/` is a git submodule (repo: `shodiwarmic/lastwar-screen-definitions`). YAML files in `screens/` drive classification thresholds, tab positions, and row-clustering parameters. No Python code changes are needed to tune them.
+
+`app/pipeline/screen_definitions.py` loads and caches all definitions via `@lru_cache`. Key public API:
+- `load_all()` — returns definitions in catalog priority order
+- `get_definition(screen_id)` — look up by screen ID
+- `get_definition_for_category(category)` — find the definition that owns a category (e.g. `"kills"` → `strength_ranking`)
+
+The classifier reads colour thresholds and tab groupings entirely from the definition. The extractor reads `row_clustering.*` parameters from the definition for the given `screen_type`.
 
 ---
 
 ## Key design decisions
 
-- **Score-anchored clustering** (not Y-proximity): prevents alliance subtitle lines (~28px below score) from merging into the player row. `UP_BAND=50`, `DOWN_BAND=5` px.
-- **`MIN_VALID_SCORE = 1_000`**: filters rank numbers (1–100) and small OCR noise; all real game scores are well above this.
-- **`_looks_like_tag` heuristic** (2–6 chars, internal uppercase): detects bare alliance abbreviations like `PoWr`, `CoRe`. Only strips a token when other tokens remain, preventing false removal of player names like `SayTin`.
-- **Vision client cached at module level**: avoids ~300ms auth overhead per request on warm Cloud Run instances.
-- **In-memory result cache** (`routes.py`): keyed on SHA-256 of image bytes, per-instance, non-persistent. Intentionally simple — upgrade to Cloud Memorystore if cross-instance caching is needed.
+- **Stitch-first, classify-per-section**: stitching happens before classification; each section of the stitched image is classified independently. This means no category-based grouping before OCR, which simplifies the pipeline and halves round-trips.
+- **Score-anchored clustering** (not Y-proximity): prevents alliance subtitle lines (~28 px below score) from merging into the player row. Band fractions come from the screen definition (`up_band_fraction`, `down_band_fraction`).
+- **`min_score` from definition**: filters rank numbers and OCR noise. Set to 1,000 for all current screens (all real scores exceed this, including Donation point totals).
+- **`_looks_like_tag` heuristic** (2–6 chars, internal uppercase, at least one lowercase): detects bare alliance abbreviations like `PoWr`, `CoRe`. Requires a lowercase letter to avoid stripping all-caps name components like `FF7`. Only strips a token when other tokens remain.
+- **Vision client cached at module level**: avoids ~300 ms auth overhead per request on warm Cloud Run instances.
+- **In-memory result cache** (`routes.py`): keyed on SHA-256 of each uploaded image's bytes, per-instance, non-persistent. Intentionally simple — upgrade to Cloud Memorystore if cross-instance caching is needed.
 - **Stitching reduces Vision API costs**: ~10 screenshots per alliance → ~3–4 API calls.
 
 ---
@@ -44,27 +66,42 @@ Only categories with data are included. Health check: `GET /health`.
 |---|---|
 | `monday`–`saturday` | Daily Rank (VS points per day) |
 | `weekly` | Weekly Rank (7-day total) |
-| `power` | Strength Ranking (player power) |
+| `power` | Strength Ranking — Power tab |
+| `kills` | Strength Ranking — Kills tab |
+| `donation_daily` | Strength Ranking — Donation tab, Daily sub-tab |
+| `donation_weekly` | Strength Ranking — Donation tab, Weekly sub-tab |
+| `mutual_assistance_daily/weekly/season` | Season Contribution — Mutual Assistance tab |
+| `siege_daily/weekly/season` | Season Contribution — Siege tab |
+| `rare_soil_war_daily/weekly/season` | Season Contribution — Rare Soil War tab |
+| `defeat_daily/weekly/season` | Season Contribution — Defeat tab |
 
 ---
 
 ## Project structure
 
 ```
-main.py                        Gunicorn entrypoint (app = create_app())
+main.py                          Gunicorn entrypoint (app = create_app())
 app/
-  routes.py                    POST /process-batch, GET /health
+  routes.py                      POST /process-batch, GET /health
+  screen_definitions/            Git submodule — YAML screen definitions
+    catalog.yaml                 Priority-ordered list of screens
+    meta-schema.json             JSON Schema for definition files
+    screens/
+      daily_ranking.yaml
+      weekly_ranking.yaml
+      strength_ranking.yaml
   pipeline/
-    classifier.py              Two-pass colour + OCR classification
-    stitcher.py                Image grouping and vertical stitching
-    ocr_client.py              Vision API wrapper, word-block extraction
-    extractor.py               Row clustering and player parsing
+    screen_definitions.py        Loads and caches YAML definitions
+    classifier.py                Two-pass colour + OCR classification
+    stitcher.py                  Resolution grouping and vertical stitching
+    ocr_client.py                Vision API wrapper, word-block extraction
+    extractor.py                 Row clustering and player parsing
   utils/
-    text_utils.py              Name cleaning, token detection, regex patterns
-    image_utils.py             PIL helpers (crop, sample colour, convert)
-    logger.py                  Structured JSON logger
+    text_utils.py                Name cleaning, token detection, regex patterns
+    image_utils.py               PIL helpers (crop, sample colour, convert)
+    logger.py                    Structured JSON logger
   models/
-    schemas.py                 Pydantic models: PlayerEntry, BatchResult
+    schemas.py                   Pydantic models: PlayerEntry, BatchResult
 ```
 
 ---
@@ -72,8 +109,9 @@ app/
 ## Running locally
 
 ```bash
-gcloud auth application-default login   # or set GOOGLE_APPLICATION_CREDENTIALS
-python main.py                          # runs on :8080
+git submodule update --init --recursive   # initialise screen definitions submodule
+gcloud auth application-default login     # or set GOOGLE_APPLICATION_CREDENTIALS
+python main.py                            # runs on :8080
 ```
 
 Production uses Gunicorn via `Dockerfile CMD`. `PORT` env var is set automatically by Cloud Run.
@@ -82,8 +120,8 @@ Production uses Gunicorn via `Dockerfile CMD`. `PORT` env var is set automatical
 
 ## Extending / tuning
 
-- **New alliance display name to strip:** add to `_ALLIANCE_NAME_SUFFIXES` in `text_utils.py` — no other changes needed.
+- **Colour thresholds, tab positions, clustering bands:** edit the relevant YAML in `app/screen_definitions/screens/` — no code changes needed. See `app/screen_definitions/README.md` for the full field reference.
+- **New screen type:** add a YAML definition, register it in `catalog.yaml`, capture a fixture, run `pytest`. No Python changes needed for screens using existing classifier strategies.
+- **New alliance display name to strip:** add to `_ALLIANCE_NAME_SUFFIXES` in `text_utils.py`.
 - **New UI label to ignore:** add to `_UI_LABELS` in `text_utils.py`.
-- **Row clustering band:** `UP_BAND` / `DOWN_BAND` constants in `extractor.py`.
-- **Classification colour thresholds:** `ORANGE_H_MIN/MAX`, `ORANGE_S_MIN`, `ORANGE_V_MIN` in `classifier.py`.
 - **Max batch size:** `MAX_IMAGES_PER_BATCH` in `routes.py`.

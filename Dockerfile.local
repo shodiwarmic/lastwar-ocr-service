@@ -1,0 +1,54 @@
+# Dockerfile.local
+#
+# Builds the local-deployment OCR service: PaddleOCR backend, no Cloud
+# Vision dependency, no Google Cloud account required. Intended to run
+# as a sidecar alongside lastwar-alliance-manager via docker-compose.
+#
+# Usage:
+#   docker build -f Dockerfile.local -t lastwar-ocr-service:local .
+#   docker run -e OCR_ENGINE=paddleocr -p 8080:8080 lastwar-ocr-service:local
+#
+# Trade-offs vs the cloud build (Dockerfile):
+#   * No per-image API cost; runs offline.
+#   * Image is much larger (~2GB vs ~200MB) because of PaddlePaddle.
+#   * First request downloads model weights (~250MB) into the container's
+#     ~/.paddlex/. Mount /home/appuser/.paddlex as a volume in
+#     docker-compose to avoid re-downloading on container restart.
+#   * Stylised header text (e.g. "STRENGTH RANKING") is unreliable, so the
+#     local pipeline expects callers to pass `?category=…` to /process-batch
+#     to skip auto-classification. See LOCAL_OCR_POC.md in
+#     lastwar-screenshots and the Mobile API section of
+#     lastwar-alliance-manager/CLAUDE.md.
+
+FROM python:3.10-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PORT=8080 \
+    OCR_ENGINE=paddleocr
+
+WORKDIR /app
+
+# PaddlePaddle needs a few system libs at runtime: OpenMP, libGL (used by
+# OpenCV which PaddleOCR pulls in), libglib (gtk image utils).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libgomp1 \
+        libgl1 \
+        libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements-local.txt .
+RUN pip install --no-cache-dir -r requirements-local.txt
+
+COPY . .
+
+RUN adduser --disabled-password --gecos "" appuser && chown -R appuser /app
+USER appuser
+
+# Pre-create the model cache directory so a docker-compose volume mount
+# is straightforward (-v paddleocr-models:/home/appuser/.paddlex).
+RUN mkdir -p /home/appuser/.paddlex
+
+EXPOSE 8080
+
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "1", "--timeout", "300", "--access-logfile", "-", "main:app"]

@@ -31,12 +31,15 @@ Known edge cases handled:
 
 from __future__ import annotations
 
-from app.models.schemas import PlayerEntry
+from app.models.schemas import PlayerEntry, ScoreCandidate
+from app.pipeline.screen_definitions import RowClusteringConfig, get_definition_for_category
 from app.utils.text_utils import (
+    all_crash_splits,
     clean_player_name,
     is_numeric_token,
     is_ui_label,
     parse_score,
+    split_name_score_crash,
 )
 from app.utils.logger import get_logger
 
@@ -97,16 +100,20 @@ def extract_players(
         logger.warning("extract_players called with empty text_blocks", extra={"screen_type": screen_type})
         return []
 
+    defn = get_definition_for_category(screen_type)
+    row_config = defn.row_clustering if defn else RowClusteringConfig()
+
     # Step 1: Filter blocks that are clearly not player data
     filtered = _filter_noise_blocks(text_blocks)
 
     # Step 2: Cluster into rows
-    rows = build_rows_from_blocks(filtered, image_height)
+    rows = build_rows_from_blocks(filtered, image_height, row_config)
 
-    # Step 3-5: Parse, clean, validate
-    players: list[PlayerEntry] = []
+    # Step 3-4: Parse and clean every row; note which rows involved a crash split
+    # so we can validate them against their neighbours in the next pass.
+    _pre: list[dict] = []  # {"name": str, "score": int, "crash_text": str | None}
     for row in rows:
-        result = parse_player_row(row, image_width=image_width)
+        result = parse_player_row(row, image_width=image_width, row_config=row_config)
         if result is None:
             continue
 
@@ -114,11 +121,78 @@ def extract_players(
         clean_name = clean_player_name(raw_name)
         score      = parse_score(raw_score)
 
-        if not is_valid_player_row(clean_name, score):
+        if not is_valid_player_row(clean_name, score, min_score=row_config.min_score):
             continue
 
+        # Identify the crash block in this row, if any, for use in pass 2.
+        crash_text = next(
+            (b["text"] for b in reversed(row) if split_name_score_crash(b["text"])),
+            None,
+        )
+        all_splits = all_crash_splits(crash_text) if crash_text else []
+        _pre.append({"name": clean_name, "score": score, "crash_text": crash_text, "all_splits": all_splits})
+
+    # Step 5: Validate crash rows using adjacent scores as monotonicity bounds.
+    #
+    # The leaderboard is sorted highest-to-lowest, so every score must satisfy:
+    #     score[i-1] >= score[i] >= score[i+1]
+    #
+    # For a crash row whose heuristic score falls outside that window, we try
+    # progressively larger alternative splits (ascending score order) until one
+    # fits.  When no neighbour exists (rank 1 has no row above; the last visible
+    # row has no row below) only the available single bound is enforced.
+    players: list[PlayerEntry] = []
+    for i, entry in enumerate(_pre):
+        name       = entry["name"]
+        score      = entry["score"]
+        all_splits = entry["all_splits"]
+
+        # Build candidates list for any crash row that has genuine ambiguity
+        # (two or more valid splits).  Ordered smallest score first so
+        # candidates[0] always matches the heuristic top-level name/score.
+        candidates: list[ScoreCandidate] | None = None
+        if len(all_splits) > 1:
+            candidates = [
+                ScoreCandidate(player_name=clean_player_name(p), score=parse_score(s))
+                for p, s in all_splits
+                if is_valid_player_row(clean_player_name(p), parse_score(s), min_score=row_config.min_score)
+            ]
+            if len(candidates) < 2:
+                candidates = None  # collapsed to one valid option — unambiguous
+
+        if entry["crash_text"]:
+            upper = _pre[i - 1]["score"] if i > 0            else None
+            lower = _pre[i + 1]["score"] if i < len(_pre) - 1 else None
+
+            fits = (upper is None or score <= upper) and (lower is None or score >= lower)
+
+            if not fits:
+                for alt_prefix, alt_score_str in all_splits:
+                    alt_score = parse_score(alt_score_str)
+                    alt_name  = clean_player_name(alt_prefix)
+                    if not is_valid_player_row(alt_name, alt_score, min_score=row_config.min_score):
+                        continue
+                    alt_fits = (
+                        (upper is None or alt_score <= upper)
+                        and (lower is None or alt_score >= lower)
+                    )
+                    if alt_fits:
+                        logger.debug(
+                            "Crash split corrected via adjacent-score bounds",
+                            extra={
+                                "original_name":  name,
+                                "original_score": score,
+                                "corrected_name":  alt_name,
+                                "corrected_score": alt_score,
+                                "upper_bound": upper,
+                                "lower_bound": lower,
+                            },
+                        )
+                        name, score = alt_name, alt_score
+                        break
+
         try:
-            players.append(PlayerEntry(player_name=clean_name, score=score))
+            players.append(PlayerEntry(player_name=name, score=score, candidates=candidates))
         except Exception:
             # Pydantic validation failed — skip this row
             continue
@@ -143,6 +217,7 @@ def extract_players(
 def build_rows_from_blocks(
     text_blocks: list[dict],
     image_height: int = 2400,
+    row_config: RowClusteringConfig = None,
 ) -> list[list[dict]]:
     """
     Builds player rows using score-anchored upward clustering.
@@ -150,20 +225,21 @@ def build_rows_from_blocks(
     Instead of general Y-proximity clustering (which merges player name and
     alliance subtitle since they have similar gaps to the score), this approach:
 
-    1. Identifies score tokens (numeric values >= MIN_VALID_SCORE)
+    1. Identifies score tokens (numeric values >= row_config.min_score)
     2. For each score, collects all non-score text blocks within an upward
        band (UP_BAND px above the score, DOWN_BAND px below)
     3. Name is always ABOVE the score in the UI; alliance is below — so
        the asymmetric band captures the name and excludes the alliance
 
-    The band sizes are absolute pixels tuned to the observed layout:
-    - Score sits ~30px below the player name
-    - Alliance subtitle sits ~28px below the score
-    Using UP_BAND=50, DOWN_BAND=5 captures name but not alliance.
+    Band sizes are derived from screen definition fractions scaled to
+    image_height so they work correctly across device resolutions.
 
     Args:
         text_blocks:  List of text block dicts sorted top-to-bottom.
-        image_height: Unused — kept for API compatibility.
+        image_height: Source image height in pixels, used to compute
+                      absolute band sizes from the definition fractions.
+        row_config:   Row clustering configuration from the screen
+                      definition. Defaults to RowClusteringConfig() if None.
 
     Returns:
         List of rows, each containing score block + associated name blocks,
@@ -172,12 +248,16 @@ def build_rows_from_blocks(
     if not text_blocks:
         return []
 
-    UP_BAND   = 50   # px above score to search for name tokens
-    DOWN_BAND =  5   # px below score (small buffer for OCR jitter)
+    if row_config is None:
+        row_config = RowClusteringConfig()
+
+    UP_BAND   = max(1, int(row_config.score_anchored.up_band_fraction   * image_height))
+    DOWN_BAND = max(1, int(row_config.score_anchored.down_band_fraction * image_height))
+    min_score = row_config.min_score
 
     # Separate scores from name/other tokens
-    score_blocks = [b for b in text_blocks if _is_score_block(b)]
-    other_blocks = [b for b in text_blocks if not _is_score_block(b)]
+    score_blocks = [b for b in text_blocks if _is_score_block(b, min_score)]
+    other_blocks = [b for b in text_blocks if not _is_score_block(b, min_score)]
 
     rows = []
     for score_block in score_blocks:
@@ -195,11 +275,27 @@ def build_rows_from_blocks(
     return rows
 
 
-def _is_score_block(block: dict) -> bool:
-    """Returns True if a block looks like a player score (numeric >= MIN_VALID_SCORE)."""
-    from app.utils.text_utils import parse_score
-    val = parse_score(block["text"])
-    return val is not None and val >= MIN_VALID_SCORE
+def _is_score_block(block: dict, min_score: int = MIN_VALID_SCORE) -> bool:
+    """
+    Returns True if a block contains a player score >= min_score.
+
+    Handles two cases:
+    1. Pure numeric token (e.g. "3,045,000") — direct parse_score check.
+    2. Crash token (e.g. "Ruthless54323,045,000") — name+score merged into
+       one block when OCR sees no gap between a digit-ending name and the
+       score.  split_name_score_crash extracts the embedded score.
+    """
+    text = block["text"]
+    val = parse_score(text)
+    if val is not None and val >= min_score:
+        return True
+    split = split_name_score_crash(text)
+    if split:
+        _, score_str = split
+        val = parse_score(score_str)
+        if val is not None and val >= min_score:
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -209,6 +305,7 @@ def _is_score_block(block: dict) -> bool:
 def parse_player_row(
     row_blocks: list[dict],
     image_width: int = 0,
+    row_config: RowClusteringConfig = None,
 ) -> tuple[str, str] | None:
     """
     Extracts a (raw_name_string, raw_score_string) pair from a single row.
@@ -229,6 +326,9 @@ def parse_player_row(
                      "bbox" for precise left/right edge calculation.
         image_width: Width of the source image in pixels. Used to compute a
                      relative GAP_THRESHOLD so spacing scales across devices.
+        row_config:  Row clustering configuration from the screen definition.
+                     Provides word_gap_fraction and min_word_gap_px. Defaults
+                     to RowClusteringConfig() if None.
 
     Returns:
         (raw_name, raw_score) tuple or None if no score token found.
@@ -236,31 +336,56 @@ def parse_player_row(
     if not row_blocks:
         return None
 
-    # Minimum pixel gap between word bounding boxes to insert a space.
-    # Expressed as a fraction of image width so it scales across devices.
-    # At 1080px wide: 0.015 * 1080 = ~16px (typical inter-word spacing).
-    # Falls back to 16px if image_width is not provided.
-    GAP_THRESHOLD = max(8, int(image_width * 0.015)) if image_width else 16
+    if row_config is None:
+        row_config = RowClusteringConfig()
 
-    # Find the rightmost numeric token and its left edge X position
-    score_index = None
-    score_left_x = None
+    # Minimum pixel gap between word bounding boxes to insert a space.
+    # Fraction and minimum are sourced from the screen definition so they
+    # stay consistent with any per-screen tuning in the YAML.
+    GAP_THRESHOLD = (
+        max(row_config.min_word_gap_px, int(image_width * row_config.word_gap_fraction))
+        if image_width else row_config.min_word_gap_px * 2
+    )
+
+    # Find the rightmost numeric token and its left edge X position.
+    # Pass 1: pure numeric token (the normal case).
+    score_index   = None
+    raw_score     = None
+    score_left_x  = None
+    crash_name_prefix: Optional[str] = None
+
     for i in range(len(row_blocks) - 1, -1, -1):
         if is_numeric_token(row_blocks[i]["text"]):
-            score_index = i
+            score_index  = i
+            raw_score    = row_blocks[i]["text"]
             score_left_x = _block_left_x(row_blocks[i])
             break
+
+    # Pass 2: crash-token fallback — name+score merged into one block.
+    # e.g. "Ruthless54323,045,000" → name_prefix="Ruthless5432", score="3,045,000"
+    if score_index is None:
+        for i in range(len(row_blocks) - 1, -1, -1):
+            split = split_name_score_crash(row_blocks[i]["text"])
+            if split:
+                crash_name_prefix, raw_score = split
+                score_index  = i
+                score_left_x = _block_left_x(row_blocks[i])
+                break
 
     if score_index is None:
         return None
 
-    raw_score = row_blocks[score_index]["text"]
-
-    # Collect name blocks: must be LEFT of the score token
+    # Collect name blocks that are spatially LEFT of the score token.
     name_blocks = [
         b for b in row_blocks[:score_index]
         if score_left_x is None or _block_right_x(b) <= score_left_x
     ]
+
+    # For crash tokens, the name prefix extracted from the merged block is
+    # appended as a virtual block so it participates in the name string.
+    # It carries no bbox, so the gap check falls back to inserting a space.
+    if crash_name_prefix is not None:
+        name_blocks.append({"text": crash_name_prefix, "avg_x": score_left_x or 0})
 
     if not name_blocks:
         return None
@@ -325,19 +450,21 @@ def _block_right_x(block: dict) -> float | None:
 # Validation
 # ---------------------------------------------------------------------------
 
-def is_valid_player_row(name: str, score) -> bool:
+def is_valid_player_row(name: str, score, min_score: int = MIN_VALID_SCORE) -> bool:
     """
     Returns True if a (name, score) pair represents a real player row.
 
     Rejects:
     - Empty names
     - None or zero scores
-    - Scores below MIN_VALID_SCORE (filters out rank numbers 1–100)
+    - Scores below min_score (filters out rank numbers 1–100)
     - Names that match known UI labels (column headers, tab names)
 
     Args:
-        name:  Cleaned player name string.
-        score: Parsed integer score or None.
+        name:      Cleaned player name string.
+        score:     Parsed integer score or None.
+        min_score: Minimum score to accept. Sourced from the screen definition's
+                   row_clustering.min_score; falls back to MIN_VALID_SCORE.
 
     Returns:
         True if the row should be included in the output.
@@ -348,7 +475,7 @@ def is_valid_player_row(name: str, score) -> bool:
     if score is None:
         return False
 
-    if score < MIN_VALID_SCORE:
+    if score < min_score:
         return False
 
     if is_ui_label(name):

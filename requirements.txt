@@ -4,3 +4,5 @@ Pillow==10.4.0
 google-cloud-vision==3.7.2
 pydantic==2.8.2
 python-dotenv==1.0.1
+PyYAML==6.0.2
+jsonschema==4.23.0

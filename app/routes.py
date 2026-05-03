@@ -7,23 +7,23 @@ Endpoints:
     POST /process-batch   — Main batch processing endpoint
     GET  /health          — Cloud Run health check
 
-Pipeline orchestration (POST /process-batch):
-    1. Validate incoming files
-    2. Convert to PIL images
-    3. Pass 1: classify each image using colour sampling
-    4. For low-confidence images: Pass 2 OCR-assisted classification
-    5. Group high-confidence images by (category, resolution)
-    6. Stitch each group into one tall image
-    7. Run OCR on all stitched images + any Pass 2 fallback images
-    8. Extract player rows from each OCR result
-    9. Merge results into BatchResult and return JSON
+Pipeline (POST /process-batch):
+    1. Validate and load uploaded images.
+    2. Group by resolution (width × height); stitch each group into one tall
+       image with black separator bands between images.  Record the Y range of
+       each source image in the stitched output.
+    3. If any stitched image would exceed Vision API limits (20 MB / 75 MP),
+       recursively bisect that group until every sub-batch is within bounds.
+    4. Submit each stitched image to the Vision API (one call per sub-batch).
+    5. For each source image section: filter OCR blocks to its Y range, then
+       classify the section from its text content.  Day/tab detection uses
+       colour sampling on the OCR-returned bounding boxes.
+    6. Extract player rows from each classified section.
+    7. Merge results and return JSON.
 
 Cache:
-    A simple in-memory dict maps image hash → extraction result.
-    If the same screenshot is submitted twice in the same container lifetime,
-    the Vision API is not called again. The cache is per-instance and does not
-    persist across container restarts — this is intentional to avoid stale data.
-    For a persistent cache, replace with Cloud Memorystore (Redis).
+    An in-memory dict maps JPEG-hash → per-category extraction results.
+    Per-instance, non-persistent.
 """
 
 from __future__ import annotations
@@ -32,29 +32,21 @@ import hashlib
 
 from flask import Blueprint, jsonify, request
 
-from app.models.schemas import BatchResult, PlayerEntry
-from app.pipeline.classifier import (
-    CONFIDENCE_THRESHOLD,
-    classify_screenshot,
-    classify_from_ocr_text,
-)
+from app.models.schemas import BatchResult, PlayerEntry, VALID_CATEGORIES
+from app.pipeline.classifier import classify_from_ocr_text
 from app.pipeline.extractor import extract_players
 from app.pipeline.ocr_client import extract_text_blocks, run_ocr
-from app.pipeline.stitcher import (
-    group_images_by_category_and_resolution,
-    stitch_images_vertically,
-)
-from app.utils.image_utils import get_image_dimensions, pil_from_file_storage, pil_to_bytes
-from app.utils.logger import get_logger, log_classification_event
+from app.pipeline.stitcher import prepare_stitched_batches
+from app.utils.image_utils import pil_from_file_storage, pil_to_bytes
+from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 bp = Blueprint("main", __name__)
 
-# Simple in-memory result cache: {image_hash: list[PlayerEntry]}
-_result_cache: dict[str, list[PlayerEntry]] = {}
+# In-memory result cache: {jpeg_hash: {category: [PlayerEntry, ...]}}
+_result_cache: dict[str, dict[str, list[PlayerEntry]]] = {}
 
-# Maximum number of images accepted per batch (safety limit)
 MAX_IMAGES_PER_BATCH = 100
 
 
@@ -64,40 +56,11 @@ MAX_IMAGES_PER_BATCH = 100
 
 @bp.route("/health", methods=["GET"])
 def health():
-    """
-    Cloud Run health check endpoint.
-
-    Cloud Run sends periodic GET /health requests to verify the container
-    is alive. Returns 200 OK with a minimal JSON body. No authentication
-    required — health checks come from the Cloud Run infrastructure.
-    """
     return jsonify({"status": "ok"}), 200
 
 
 @bp.route("/process-batch", methods=["POST"])
 def process_batch():
-    """
-    Accepts a batch of Last War ranking screenshots and returns structured data.
-
-    Request:
-        Content-Type: multipart/form-data
-        Body key: "images" (one or more image files)
-
-    Response 200:
-        {
-            "monday":    [{"player_name": "...", "score": 123456}],
-            "friday":    [...],
-            "weekly":    [...],
-            "power":     [...]
-        }
-        Only categories that produced results are included.
-
-    Response 400:
-        {"error": "human-readable error message"}
-
-    Response 500:
-        {"error": "Internal processing error", "detail": "..."}
-    """
     # ------------------------------------------------------------------ #
     # 1. Validate input
     # ------------------------------------------------------------------ #
@@ -108,154 +71,119 @@ def process_batch():
     if len(files) > MAX_IMAGES_PER_BATCH:
         return jsonify({"error": f"Too many images. Maximum {MAX_IMAGES_PER_BATCH} per batch."}), 400
 
-    logger.info("Batch received", extra={"image_count": len(files)})
+    # Optional caller-supplied category — bypasses classification entirely.
+    # Required for screens where auto-detection is not used (e.g. alliance
+    # contribution tabs: mutual_assistance, siege, rare_soil_war, defeat).
+    category_override: str | None = request.form.get("category", "").strip() or None
+    if category_override is not None and category_override not in VALID_CATEGORIES:
+        return jsonify({"error": f"Unknown category '{category_override}'. Valid values: {sorted(VALID_CATEGORIES)}"}), 400
+
+    logger.info("Batch received", extra={"image_count": len(files), "category_override": category_override})
 
     # ------------------------------------------------------------------ #
     # 2. Load images
     # ------------------------------------------------------------------ #
-    loaded: list[tuple] = []   # (pil_image, filename, bytes_hash)
+    loaded: list[tuple] = []
     for file_storage in files:
-        filename = file_storage.filename or "unknown"
+        filename  = file_storage.filename or "unknown"
         pil_image = pil_from_file_storage(file_storage)
         if pil_image is None:
             logger.warning("Skipping unreadable image", extra={"image_filename": filename})
             continue
-
-        img_bytes = pil_to_bytes(pil_image)
-        img_hash  = hashlib.sha256(img_bytes).hexdigest()
-        loaded.append((pil_image, filename, img_hash))
+        loaded.append((pil_image, filename))
 
     if not loaded:
         return jsonify({"error": "No valid images could be opened from the provided files."}), 400
 
     # ------------------------------------------------------------------ #
-    # 3. Pass 1 — colour-based classification
+    # 3. Group by resolution, stitch with separators, split if needed
     # ------------------------------------------------------------------ #
-    classified: list[tuple]  = []   # (pil_image, category, filename) for high-confidence
-    fallback_images: list[tuple] = []   # (pil_image, filename, img_hash) for OCR fallback
-
-    for pil_image, filename, img_hash in loaded:
-        category, confidence = classify_screenshot(pil_image, filename=filename)
-
-        if confidence >= CONFIDENCE_THRESHOLD and category is not None:
-            classified.append((pil_image, category, filename))
-            log_classification_event(
-                logger, filename,
-                resolution=get_image_dimensions(pil_image),
-                pass1_result=category,
-                pass1_confidence=confidence,
-                pass2_result=None,
-                ocr_triggered=False,
-            )
-        else:
-            # Low confidence — queue for OCR-assisted classification
-            fallback_images.append((pil_image, filename, img_hash))
-            logger.debug(
-                "Image queued for OCR fallback",
-                extra={"image_filename": filename, "pass1_result": category, "confidence": confidence},
-            )
+    batches = prepare_stitched_batches(loaded)
 
     # ------------------------------------------------------------------ #
-    # 4. Build stitched OCR queue from high-confidence images
+    # 4. OCR each stitched batch; classify and extract per section
     # ------------------------------------------------------------------ #
     result = BatchResult()
 
-    # Group and stitch high-confidence images
-    groups = group_images_by_category_and_resolution(classified)
-    ocr_queue: list[tuple] = []   # (stitched_image, category, source_filenames)
-
-    for (category, w, h), image_list in groups.items():
-        stitched = stitch_images_vertically(image_list, category)
-        filenames = [f for _, f in image_list]
-        ocr_queue.append((stitched, category, filenames))
-
-    # ------------------------------------------------------------------ #
-    # 5. Process fallback images individually (unstitched)
-    # ------------------------------------------------------------------ #
-    for pil_image, filename, img_hash in fallback_images:
-
-        # Check cache first
-        if img_hash in _result_cache:
-            logger.info("Cache hit for fallback image", extra={"image_filename": filename})
-            # We don't know the category from cache alone — re-classify from
-            # cached text blocks if available, else re-run OCR
-            # For simplicity: cache miss on fallbacks, just re-run
-            pass
-
-        annotation, img_hash_returned = run_ocr(pil_image)
-        if annotation is None:
-            log_classification_event(
-                logger, filename,
-                resolution=get_image_dimensions(pil_image),
-                pass1_result=None,
-                pass1_confidence=0.0,
-                pass2_result=None,
-                ocr_triggered=True,
-                error="OCR API call failed",
-            )
-            continue
-
-        text_blocks = extract_text_blocks(annotation)
-        category, confidence = classify_from_ocr_text(text_blocks, image=pil_image, filename=filename)
-
-        log_classification_event(
-            logger, filename,
-            resolution=get_image_dimensions(pil_image),
-            pass1_result=None,
-            pass1_confidence=0.0,
-            pass2_result=category,
-            ocr_triggered=True,
-        )
-
-        if category is None:
-            logger.error(
-                "Classification failed after OCR fallback — image skipped",
-                extra={"image_filename": filename},
-            )
-            continue
-
-        # Extract players directly from the OCR already performed
-        w, h = get_image_dimensions(pil_image)
-        players = extract_players(text_blocks, screen_type=category, image_height=h, image_width=w)
-
-        # Cache the result
-        _result_cache[img_hash_returned] = players
-
-        result.add_entries(category, players)
-
-    # ------------------------------------------------------------------ #
-    # 6. Run OCR on stitched groups and extract players
-    # ------------------------------------------------------------------ #
-    for stitched_image, category, source_filenames in ocr_queue:
-
-        img_bytes = pil_to_bytes(stitched_image)
+    for stitched_image, regions in batches:
+        img_bytes = pil_to_bytes(stitched_image, fmt="JPEG")
         img_hash  = hashlib.sha256(img_bytes).hexdigest()
 
         if img_hash in _result_cache:
             logger.info(
-                "Cache hit for stitched image",
-                extra={"category": category, "filenames": source_filenames},
+                "Cache hit for stitched batch",
+                extra={"image_hash": img_hash[:12], "region_count": len(regions)},
             )
-            result.add_entries(category, _result_cache[img_hash])
+            for category, players in _result_cache[img_hash].items():
+                result.add_entries(category, players)
             continue
 
-        annotation, img_hash_returned = run_ocr(stitched_image)
+        annotation, _ = run_ocr(stitched_image)
         if annotation is None:
             logger.error(
-                "OCR failed for stitched group",
-                extra={"category": category, "filenames": source_filenames},
+                "OCR failed for stitched batch",
+                extra={"image_filenames": [r.filename for r in regions]},
             )
             continue
 
-        text_blocks = extract_text_blocks(annotation)
-        w, h = get_image_dimensions(stitched_image)
-        players = extract_players(text_blocks, screen_type=category, image_height=h, image_width=w)
+        all_blocks = extract_text_blocks(annotation)
+        batch_cache_entry: dict[str, list[PlayerEntry]] = {}
 
-        _result_cache[img_hash_returned] = players
-        result.add_entries(category, players)
+        for region in regions:
+            section_blocks = [
+                b for b in all_blocks
+                if region.y_start <= b["avg_y"] < region.y_end
+            ]
+
+            if not section_blocks:
+                logger.warning(
+                    "No OCR blocks in section — image may be blank or unreadable",
+                    extra={"image_filename": region.filename},
+                )
+                continue
+
+            if category_override is not None:
+                category   = category_override
+                confidence = 1.0
+            else:
+                category, confidence = classify_from_ocr_text(
+                    section_blocks,
+                    image=stitched_image,
+                    filename=region.filename,
+                )
+
+            if category is None:
+                logger.warning(
+                    "Classification failed for section",
+                    extra={"image_filename": region.filename},
+                )
+                continue
+
+            section_height = region.y_end - region.y_start
+            players = extract_players(
+                section_blocks,
+                screen_type=category,
+                image_height=section_height,
+                image_width=stitched_image.width,
+            )
+
+            result.add_entries(category, players)
+            batch_cache_entry.setdefault(category, []).extend(players)
+
+            logger.info(
+                "Section processed",
+                extra={
+                    "image_filename": region.filename,
+                    "category":       category,
+                    "confidence":     round(confidence, 2),
+                    "players_found":  len(players),
+                },
+            )
+
+        _result_cache[img_hash] = batch_cache_entry
 
     # ------------------------------------------------------------------ #
-    # 7. Return response
+    # 5. Return response
     # ------------------------------------------------------------------ #
     if result.is_empty():
         logger.warning("Batch produced no results", extra={"image_count": len(loaded)})

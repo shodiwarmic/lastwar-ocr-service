@@ -15,11 +15,13 @@ Tests cover:
 import pytest
 
 from app.pipeline.extractor import (
+    _is_score_block,
     build_rows_from_blocks,
     extract_players,
     is_valid_player_row,
     parse_player_row,
 )
+from app.models.schemas import ScoreCandidate
 from app.utils.text_utils import clean_player_name
 from tests.conftest import FIXTURE_DIR, get_text_blocks, load_fixture, make_block, skip_if_no_fixture
 
@@ -278,21 +280,353 @@ class TestExtractPlayersSynthetic:
         assert players[0].score == 45_635_206
 
 
+# ---------------------------------------------------------------------------
+# Crash token detection (_is_score_block)
+# ---------------------------------------------------------------------------
+
+class TestIsScoreBlock:
+
+    def test_pure_numeric_score(self):
+        assert _is_score_block(make_block("3,045,000", 600, 400)) is True
+
+    def test_crash_token_is_score_block(self):
+        # Merged name+score must still anchor a row
+        assert _is_score_block(make_block("Ruthless54323,045,000", 400, 400)) is True
+
+    def test_plain_name_is_not_score_block(self):
+        assert _is_score_block(make_block("ShodiWarmic", 300, 400)) is False
+
+    def test_small_number_filtered_by_min_score(self):
+        assert _is_score_block(make_block("42", 60, 400)) is False
+
+    def test_crash_token_below_min_score_is_not_score_block(self):
+        # Name + score < min_score should not anchor a row
+        assert _is_score_block(make_block("Name999", 400, 400)) is False
+
+
+# ---------------------------------------------------------------------------
+# Crash token row parsing (parse_player_row)
+# ---------------------------------------------------------------------------
+
+class TestParsePlayerRowCrash:
+
+    def test_fully_merged_crash_token(self):
+        """OCR merges name+score into one block — must still extract both."""
+        blocks = [
+            make_block("[PoWr]",                  80, 400),
+            make_block("Ruthless54323,045,000",  400, 400),
+        ]
+        result = parse_player_row(blocks, image_width=1080)
+        assert result is not None
+        raw_name, raw_score = result
+        assert "Ruthless5432" in raw_name
+        assert raw_score == "3,045,000"
+
+    def test_crash_with_multi_token_name(self):
+        """Non-crash name tokens to the left of the crash block are included."""
+        blocks = [
+            make_block("[PoWr]",           80, 400),
+            make_block("Louie",           220, 400),
+            make_block("MW2,648,640",     450, 400),
+        ]
+        result = parse_player_row(blocks, image_width=1080)
+        assert result is not None
+        raw_name, raw_score = result
+        assert "Louie" in raw_name
+        assert "MW" in raw_name
+        assert raw_score == "2,648,640"
+
+    def test_crash_returns_none_without_score(self):
+        """A crash block with no comma-grouped suffix should not extract."""
+        blocks = [make_block("Name12345", 400, 400)]
+        assert parse_player_row(blocks) is None
+
+
+# ---------------------------------------------------------------------------
+# extract_players — crash candidates and bounds-based correction
+# ---------------------------------------------------------------------------
+
+class TestExtractPlayersCrash:
+    """
+    Tests the two-pass extraction: heuristic split in pass 1, monotonicity
+    bounds validation in pass 2, and candidates field on output.
+    """
+
+    # -- fixture helpers --
+
+    def _mutual_assistance_weekly_blocks(self):
+        """
+        Simulates the Mutual Assistance weekly screenshot where rank 2 and 4
+        have digit-ending names that crash into their scores.
+
+        Rank 1: Sheffie      3,779,860  (clean)
+        Rank 2: Ruthless5432 3,045,000  (crash: Ruthless54323,045,000)
+        Rank 3: Louie MW     2,648,640  (clean)
+        Rank 4: CheeseKillers2 2,622,000 (crash: CheeseKillers22,622,000)
+        """
+        return [
+            make_block("[PoWr]",                    80,  200),
+            make_block("Sheffie",                  300,  200),
+            make_block("3,779,860",                700,  200),
+
+            make_block("[PoWr]",                    80,  350),
+            make_block("Ruthless54323,045,000",    400,  350),
+
+            make_block("[PoWr]",                    80,  500),
+            make_block("Louie",                    280,  500),
+            make_block("MW",                       340,  500),
+            make_block("2,648,640",                700,  500),
+
+            make_block("[PoWr]",                    80,  650),
+            make_block("CheeseKillers22,622,000",  400,  650),
+        ]
+
+    # -- candidates field --
+
+    def test_crash_row_has_candidates(self):
+        players = extract_players(
+            self._mutual_assistance_weekly_blocks(),
+            screen_type="mutual_assistance_weekly",
+            image_height=2400,
+        )
+        names = {p.player_name: p for p in players}
+        assert "Ruthless5432" in names
+        entry = names["Ruthless5432"]
+        assert entry.candidates is not None
+        assert len(entry.candidates) >= 2
+
+    def test_candidates_are_score_candidates(self):
+        players = extract_players(
+            self._mutual_assistance_weekly_blocks(),
+            screen_type="mutual_assistance_weekly",
+            image_height=2400,
+        )
+        entry = next(p for p in players if p.player_name == "Ruthless5432")
+        for c in entry.candidates:
+            assert isinstance(c, ScoreCandidate)
+            assert c.player_name
+            assert c.score > 0
+
+    def test_candidates_ordered_smallest_score_first(self):
+        players = extract_players(
+            self._mutual_assistance_weekly_blocks(),
+            screen_type="mutual_assistance_weekly",
+            image_height=2400,
+        )
+        entry = next(p for p in players if p.player_name == "Ruthless5432")
+        scores = [c.score for c in entry.candidates]
+        assert scores == sorted(scores)
+
+    def test_heuristic_at_candidates_index_zero(self):
+        players = extract_players(
+            self._mutual_assistance_weekly_blocks(),
+            screen_type="mutual_assistance_weekly",
+            image_height=2400,
+        )
+        entry = next(p for p in players if p.player_name == "Ruthless5432")
+        assert entry.candidates[0].player_name == entry.player_name
+        assert entry.candidates[0].score       == entry.score
+
+    def test_clean_row_has_no_candidates(self):
+        players = extract_players(
+            self._mutual_assistance_weekly_blocks(),
+            screen_type="mutual_assistance_weekly",
+            image_height=2400,
+        )
+        sheffie = next(p for p in players if p.player_name == "Sheffie")
+        assert sheffie.candidates is None
+
+    def test_all_four_players_extracted(self):
+        players = extract_players(
+            self._mutual_assistance_weekly_blocks(),
+            screen_type="mutual_assistance_weekly",
+            image_height=2400,
+        )
+        assert len(players) == 4
+        names = {p.player_name for p in players}
+        assert names == {"Sheffie", "Ruthless5432", "Louie MW", "CheeseKillers2"}
+
+    # -- bounds-based correction --
+
+    def test_bounds_correction_fixes_wrong_heuristic(self):
+        """
+        When the heuristic split falls outside the monotonicity window
+        the pass-2 bounds check picks the next alternative that fits.
+
+        Crash token "Name23,000" produces two candidates:
+            heuristic → ("Name2", 3,000)   — smallest score, rightmost split
+            alternative → ("Name",  23,000) — next larger
+
+        With rank 1 = 500,000 and rank 3 = 10,000 the window is [10,000, 500,000].
+        3,000 < 10,000 → fails lower bound.
+        23,000 ∈ [10,000, 500,000] → accepted.
+
+        After correction the entry should be player_name="Name", score=23,000.
+        """
+        blocks = [
+            make_block("RankOne",    300,  200),
+            make_block("500,000",    700,  200),
+
+            make_block("Name23,000", 400,  350),   # crash: heuristic=3,000, correct=23,000
+
+            make_block("RankThree",  300,  500),
+            make_block("10,000",     700,  500),
+        ]
+        players = extract_players(blocks, screen_type="siege_weekly", image_height=2400)
+        score_map = {p.player_name: p.score for p in players}
+
+        # Bounds: [10,000, 500,000] — heuristic 3,000 fails; 23,000 fits
+        assert score_map.get("Name") == 23_000
+
+    # -- serialisation --
+
+    def test_candidates_excluded_when_none(self):
+        players = extract_players(
+            self._mutual_assistance_weekly_blocks(),
+            screen_type="mutual_assistance_weekly",
+            image_height=2400,
+        )
+        sheffie = next(p for p in players if p.player_name == "Sheffie")
+        d = sheffie.model_dump(exclude_none=True)
+        assert "candidates" not in d
+
+    def test_candidates_included_in_dump_for_crash_row(self):
+        players = extract_players(
+            self._mutual_assistance_weekly_blocks(),
+            screen_type="mutual_assistance_weekly",
+            image_height=2400,
+        )
+        entry = next(p for p in players if p.player_name == "Ruthless5432")
+        d = entry.model_dump(exclude_none=True)
+        assert "candidates" in d
+        assert isinstance(d["candidates"], list)
+        assert d["candidates"][0] == {"player_name": "Ruthless5432", "score": 3_045_000}
+
+
+# ---------------------------------------------------------------------------
+# Kills screen extraction
+# ---------------------------------------------------------------------------
+
+class TestExtractKills:
+
+    def test_extracts_expected_player_count(self, kills_ranking_blocks):
+        players = extract_players(kills_ranking_blocks, screen_type="kills", image_height=1000)
+        assert len(players) == 8
+
+    def test_top_player_correct(self, kills_ranking_blocks):
+        players = extract_players(kills_ranking_blocks, screen_type="kills", image_height=1000)
+        names = [p.player_name for p in players]
+        scores = {p.player_name: p.score for p in players}
+        assert "Charlie9042" in names
+        assert scores["Charlie9042"] == 17_886_167
+
+    def test_multi_token_name_joined(self, kills_ranking_blocks):
+        players = extract_players(kills_ranking_blocks, screen_type="kills", image_height=1000)
+        names = [p.player_name for p in players]
+        assert "Cloud FF7" in names
+
+    def test_r_badge_stripped(self, kills_ranking_blocks):
+        players = extract_players(kills_ranking_blocks, screen_type="kills", image_height=1000)
+        for p in players:
+            assert not p.player_name.startswith("R"), (
+                f"R-badge not stripped from '{p.player_name}'"
+            )
+
+    def test_scores_positive(self, kills_ranking_blocks):
+        players = extract_players(kills_ranking_blocks, screen_type="kills", image_height=1000)
+        for p in players:
+            assert p.score > 0
+
+
+# ---------------------------------------------------------------------------
+# Donation Daily extraction
+# ---------------------------------------------------------------------------
+
+class TestExtractDonationDaily:
+
+    def test_extracts_expected_player_count(self, donation_daily_blocks):
+        players = extract_players(donation_daily_blocks, screen_type="donation_daily", image_height=1000)
+        assert len(players) == 8
+
+    def test_top_player_correct(self, donation_daily_blocks):
+        players = extract_players(donation_daily_blocks, screen_type="donation_daily", image_height=1000)
+        scores = {p.player_name: p.score for p in players}
+        assert "BlackIce2" in scores
+        assert scores["BlackIce2"] == 14_800
+
+    def test_multi_token_names_joined(self, donation_daily_blocks):
+        players = extract_players(donation_daily_blocks, screen_type="donation_daily", image_height=1000)
+        names = [p.player_name for p in players]
+        assert "Cloud FF7" in names
+        assert "Crazy Carol" in names
+        assert "Davilson Pirani" in names
+        assert "Doc Hollagoon" in names
+
+    def test_scores_above_minimum(self, donation_daily_blocks):
+        players = extract_players(donation_daily_blocks, screen_type="donation_daily", image_height=1000)
+        for p in players:
+            assert p.score >= 1_000
+
+
+# ---------------------------------------------------------------------------
+# Donation Weekly extraction
+# ---------------------------------------------------------------------------
+
+class TestExtractDonationWeekly:
+
+    def test_extracts_expected_player_count(self, donation_weekly_blocks):
+        players = extract_players(donation_weekly_blocks, screen_type="donation_weekly", image_height=1000)
+        assert len(players) == 8
+
+    def test_top_player_correct(self, donation_weekly_blocks):
+        players = extract_players(donation_weekly_blocks, screen_type="donation_weekly", image_height=1000)
+        scores = {p.player_name: p.score for p in players}
+        assert "CaptTrickster727" in scores
+        assert scores["CaptTrickster727"] == 28_300
+
+    def test_multi_token_names_joined(self, donation_weekly_blocks):
+        players = extract_players(donation_weekly_blocks, screen_type="donation_weekly", image_height=1000)
+        names = [p.player_name for p in players]
+        assert "Crazy Carol" in names
+        assert "Davilson Pirani" in names
+        assert "Cloud FF7" in names
+
+    def test_scores_above_minimum(self, donation_weekly_blocks):
+        players = extract_players(donation_weekly_blocks, screen_type="donation_weekly", image_height=1000)
+        for p in players:
+            assert p.score >= 1_000
+
 
 # ---------------------------------------------------------------------------
 # Real fixture extraction tests — auto-discovered
 # ---------------------------------------------------------------------------
 
 _FILENAME_TO_CATEGORY = {
-    "monday":    "monday",
-    "tuesday":   "tuesday",
-    "wednesday": "wednesday",
-    "thursday":  "thursday",
-    "friday":    "friday",
-    "saturday":  "saturday",
-    "weekly":    "weekly",
-    "power":     "power",
-    "strength":  "power",
+    "monday":                    "monday",
+    "tuesday":                   "tuesday",
+    "wednesday":                 "wednesday",
+    "thursday":                  "thursday",
+    "friday":                    "friday",
+    "saturday":                  "saturday",
+    "weekly":                    "weekly",
+    "power":                     "power",
+    "strength":                  "power",
+    "kills":                     "kills",
+    "donation_daily":            "donation_daily",
+    "donation_weekly":           "donation_weekly",
+    # Season Contribution categories
+    "mutual_assistance_daily":   "mutual_assistance_daily",
+    "mutual_assistance_weekly":  "mutual_assistance_weekly",
+    "mutual_assistance_season":  "mutual_assistance_season",
+    "siege_daily":               "siege_daily",
+    "siege_weekly":              "siege_weekly",
+    "siege_season":              "siege_season",
+    "rare_soil_war_daily":       "rare_soil_war_daily",
+    "rare_soil_war_weekly":      "rare_soil_war_weekly",
+    "rare_soil_war_season":      "rare_soil_war_season",
+    "defeat_daily":              "defeat_daily",
+    "defeat_weekly":             "defeat_weekly",
+    "defeat_season":             "defeat_season",
 }
 
 
