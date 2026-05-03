@@ -38,7 +38,7 @@ from typing import Optional
 
 from PIL import Image
 
-from app.utils.image_utils import pil_to_bytes
+from app.utils.image_utils import enhance_for_ocr, pil_to_bytes
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -122,10 +122,12 @@ def run_ocr(
     PaddleOCR / fixture captures, so the rest of the pipeline is engine-
     agnostic.
     """
+    pil_image_ocr = enhance_for_ocr(pil_image)
+
     if _ENGINE == "paddleocr":
         from app.pipeline import ocr_client_paddle  # noqa: WPS433
-        return ocr_client_paddle.run_ocr(pil_image, fmt=fmt)
-    return _run_ocr_cloud_vision(pil_image, client=client, fmt=fmt)
+        return ocr_client_paddle.run_ocr(pil_image_ocr, fmt=fmt)
+    return _run_ocr_cloud_vision(pil_image_ocr, client=client, fmt=fmt)
 
 
 def _run_ocr_cloud_vision(

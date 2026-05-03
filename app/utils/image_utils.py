@@ -16,7 +16,7 @@ are straightforward to unit test without mocking.
 import io
 from typing import Optional
 
-from PIL import Image, ImageOps, ExifTags
+from PIL import Image, ImageEnhance, ImageOps, ExifTags
 from werkzeug.datastructures import FileStorage
 
 from app.utils.logger import get_logger
@@ -191,6 +191,23 @@ def sample_color_region(
     g = sum(p[1] for p in pixels) // len(pixels)
     b = sum(p[2] for p in pixels) // len(pixels)
     return (r, g, b)
+
+
+def enhance_for_ocr(img: Image.Image) -> Image.Image:
+    """
+    Applies per-channel contrast stretching to an image before OCR.
+
+    Top-3 rank rows (gold/silver/bronze highlight) and the self-player
+    row use coloured text on coloured backgrounds with low luminance contrast,
+    causing Cloud Vision to miss score blocks.  autocontrast stretches each
+    channel's 1st–99th-percentile range to 0–255: the blue channel separation
+    between orange text (B≈0) and salmon background (B≈160) roughly doubles,
+    giving the OCR engine a cleaner signal.
+
+    Called only on the image copy that goes to the OCR API — the original
+    PIL object used by the classifier for colour sampling is not modified.
+    """
+    return ImageOps.autocontrast(img, cutoff=1)
 
 
 def is_orange(rgb: tuple[int, int, int]) -> bool:

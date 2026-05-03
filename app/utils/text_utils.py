@@ -84,7 +84,10 @@ _ALLIANCE_SUFFIX_RES = [
 # (e.g. PoWr, CoRe, TaGs) rather than hardcoding specific alliance names.
 def _looks_like_tag(token: str) -> bool:
     """Returns True if a token matches the alliance abbreviation pattern."""
-    if not 2 <= len(token) <= 6:
+    # Game constraint: alliance tags are exactly 3–4 alphanumeric characters.
+    # Keeping this tight prevents 6-char player names like "SayTin" or "100Max"
+    # from being misidentified as bare tag tokens.
+    if not 3 <= len(token) <= 4:
         return False
     # Must have at least one uppercase letter after position 0 (internal uppercase,
     # e.g. "PoWr", "CoRe") AND at least one lowercase letter.  This distinguishes
@@ -306,14 +309,15 @@ def clean_player_name(raw_name: str) -> str:
     Full name cleaning pipeline in order of operation.
 
     Applies all cleaning steps in sequence:
-    1. Strip alliance tags     (e.g. [PoWr])
-    2. Strip bare tag tokens   (e.g. PoWr without brackets)
-    3. Strip alliance suffixes (e.g. "Pantheon of Wrath")
-    4. Strip leading rank      (e.g. "48 ")
-    5. Strip R-badge tokens    (e.g. R4)
-    6. Strip Thai characters   (OCR noise from rank badge icons)
-    7. Strip OCR noise         (stray symbols)
-    8. Collapse whitespace
+    1. Truncate before first '[' when name precedes tag
+    2. Strip bracketed alliance tags  (e.g. [PoWr])
+    3. Strip bare tag tokens          (e.g. PoWr without brackets)
+    4. Strip alliance suffixes        (e.g. "Pantheon of Wrath")
+    5. Strip leading rank             (e.g. "48 ")
+    6. Strip R-badge tokens           (e.g. R4)
+    7. Strip Thai characters          (OCR noise from rank badge icons)
+    8. Strip OCR noise                (stray symbols)
+    9. Collapse whitespace
 
     Args:
         raw_name: Unprocessed name string direct from OCR output.
@@ -333,6 +337,7 @@ def clean_player_name(raw_name: str) -> str:
     _before_bracket = raw_name.split('[')[0].strip()
     _after_noise = re.sub(r'^[\d\s\.R1-5]+', '', _before_bracket).strip()
     name = _before_bracket if _after_noise else raw_name
+    name = strip_alliance_tag(name)    # handles [TAG] / (TAG) when tag precedes name
     name = strip_bare_tags(name)
     name = strip_alliance_suffixes(name)
     name = strip_leading_rank(name)
