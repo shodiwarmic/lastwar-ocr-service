@@ -21,6 +21,7 @@ from pathlib import Path
 
 from app.pipeline.classifier import (
     classify_from_ocr_text,
+    _detect_active_day_by_color,
     _ocr_detect_strength,
     _ocr_detect_weekly,
     _ocr_detect_active_day_by_text as _ocr_detect_active_day,
@@ -84,18 +85,40 @@ class TestOcrDetectWeekly:
 # ---------------------------------------------------------------------------
 
 class TestOcrDetectActiveDay:
+    """
+    The text fallback only resolves a day when a *single* day tab is present.
+    A full Mon.–Sat. tab bar is ambiguous from text alone (the active tab is a
+    colour signal, not a text one), so it returns None. The previous heuristic
+    scored a +2 for any day OCR'd without a trailing period; that systematically
+    mis-picked Thursday because Cloud Vision reliably drops the period on "Thur"
+    regardless of which day is active (batch 7038e97).
+    """
 
-    def test_detects_friday_from_day_tabs(self, friday_daily_blocks):
+    def test_full_tab_bar_is_ambiguous_returns_none(self, friday_daily_blocks):
         all_lower = {b["text"].strip().lower() for b in friday_daily_blocks}
         day = _ocr_detect_active_day(friday_daily_blocks, all_lower)
-        assert day == "friday"
+        assert day is None
+
+    def test_thursday_period_drop_does_not_win_over_other_days(self):
+        """A full tab bar where only 'Thur' lost its period (the real OCR
+        quirk) must NOT resolve to Thursday — it is ambiguous → None."""
+        blocks = [
+            make_block("Mon.",   75, 260),
+            make_block("Tues.", 185, 260),
+            make_block("Wed.",  295, 260),
+            make_block("Thur",  405, 260),   # period dropped by OCR
+            make_block("Fri.",  515, 260),
+            make_block("Sat.",  620, 260),
+        ]
+        assert _ocr_detect_active_day(blocks) is None
 
     def test_returns_none_for_no_day_blocks(self, weekly_rank_blocks):
         all_lower = {b["text"].strip().lower() for b in weekly_rank_blocks}
         day = _ocr_detect_active_day(weekly_rank_blocks, all_lower)
         assert day is None
 
-    def test_various_day_abbreviations(self):
+    def test_single_day_tab_resolves(self):
+        """A degenerate crop showing exactly one day tab resolves to that day."""
         cases = [
             ("Mon.",  "monday"),
             ("Tues.", "tuesday"),
@@ -106,8 +129,7 @@ class TestOcrDetectActiveDay:
         ]
         for abbr, expected in cases:
             blocks = [make_block(abbr, 300, 250)]
-            all_lower = {abbr.lower()}
-            result = _ocr_detect_active_day(blocks, all_lower)
+            result = _ocr_detect_active_day(blocks)
             assert result == expected, f"Expected {expected} for '{abbr}', got {result}"
 
 
@@ -136,10 +158,14 @@ class TestClassifyFromOcrText:
         assert category == "weekly"
         assert confidence >= 0.75
 
-    def test_classifies_friday_daily(self, friday_daily_blocks):
+    def test_daily_tab_bar_without_image_is_unresolved(self, friday_daily_blocks):
+        """Without a PIL image the active day cannot be told from a full tab
+        bar (it is a colour signal), so classification declines rather than
+        guessing. Real day detection is covered by the colour-based fixture
+        tests in TestRealFixtures."""
         category, confidence = classify_from_ocr_text(friday_daily_blocks)
-        assert category == "friday"
-        assert confidence >= 0.75
+        assert category is None
+        assert confidence == 0.0
 
     def test_returns_none_for_empty_blocks(self):
         category, confidence = classify_from_ocr_text([])
@@ -249,6 +275,20 @@ class TestRealFixtures:
         # Load the original screenshot for colour-based day detection if available
         image = _try_load_source_image(fixture_data.get("source_file", ""))
 
+        # Which day tab is active is a colour signal (the active tab is a
+        # desaturated white pill), not a text one — so a day fixture cannot be
+        # verified without its screenshot. Skip rather than fall back to a
+        # text heuristic, which can only guess (see the de-biased fallback in
+        # classifier._ocr_detect_active_day_by_text).
+        _DAY_CATEGORIES = {
+            "monday", "tuesday", "wednesday", "thursday", "friday", "saturday",
+        }
+        if expected in _DAY_CATEGORIES and image is None:
+            pytest.skip(
+                f"Day detection needs the source screenshot (colour signal); "
+                f"image for '{fixture_name}' not available."
+            )
+
         category, confidence = classify_from_ocr_text(
             blocks, image=image, filename=f"{fixture_name}.png"
         )
@@ -257,6 +297,58 @@ class TestRealFixtures:
             f"(image_available={image is not None})"
         )
         assert confidence > 0.0
+
+
+class TestDailyRankMisclassificationRegression:
+    """
+    Regression for archived batch 7038e97 (2026-06-16): a Monday Daily-Rank
+    screenshot (the last page, ranks 89–95) was classified as Thursday.
+
+    Two-stage failure, both fixed:
+      1. The active tab was identified by *brightness*. The active Monday pill
+         carries bold dark glyphs, so its sampled mean V landed within ~0.02 of
+         an inactive tab — under min_gap once stitched (0.0235 vs the 0.032 it
+         measured standalone) — so colour sampling declared itself inconclusive.
+      2. It then fell to the text fallback, which awarded +2 to any day OCR'd
+         without a trailing period. Cloud Vision reliably drops the period on
+         "Thur", so the fallback picked Thursday on every daily screen.
+
+    The fix switches colour sampling to *saturation* (the active white pill is
+    desaturated, S ≈ 0.02, vs warm-grey inactive tabs at S ≈ 0.09 — a ~0.07 gap
+    that does not invert) and de-biases the text fallback to None on an
+    ambiguous tab bar.
+    """
+
+    FIXTURE = "monday_IMG_4358"
+
+    def _load(self, skip_if_no_fixture):
+        skip_if_no_fixture(self.FIXTURE)
+        data = load_fixture(self.FIXTURE)
+        image_path = (
+            Path(__file__).parent / "fixtures" / "screenshots" / data["source_file"]
+        )
+        if not image_path.is_file():
+            pytest.skip(f"Source image not committed: {image_path}")
+        from app.utils.image_utils import pil_from_bytes
+        return data["text_blocks"], pil_from_bytes(image_path.read_bytes())
+
+    def test_classifies_as_monday_not_thursday(self, skip_if_no_fixture):
+        blocks, image = self._load(skip_if_no_fixture)
+        category, confidence = classify_from_ocr_text(
+            blocks, image=image, filename=f"{self.FIXTURE}.png"
+        )
+        assert category == "monday", f"regressed to {category!r}"
+        assert confidence == 0.95  # resolved by colour sampling, not the fallback
+
+    def test_saturation_colour_sampling_picks_monday(self, skip_if_no_fixture):
+        blocks, image = self._load(skip_if_no_fixture)
+        assert _detect_active_day_by_color(image, blocks) == "monday"
+
+    def test_text_fallback_no_longer_picks_thursday(self, skip_if_no_fixture):
+        """The smoking gun: on this real tab bar the old fallback returned
+        'thursday'. De-biased, it must decline (None) rather than guess."""
+        blocks, _image = self._load(skip_if_no_fixture)
+        assert _ocr_detect_active_day(blocks) is None
 
 
 def _try_load_source_image(source_file: str):

@@ -224,10 +224,12 @@ def friday_daily_blocks():
     """
     Synthetic OCR blocks representing a Friday Daily Rank screen.
 
-    The active tab (Fri) is given WITHOUT a trailing period to simulate the
-    signal used by the scoring-based active day detector. Inactive day tabs
-    retain their periods (Mon., Tues., etc.). All tabs sit at the same Y
-    to match real screenshot behaviour where all tabs are in one horizontal bar.
+    All six day tabs sit at the same Y, matching the real screenshot's single
+    horizontal tab bar. Which tab is active is a colour signal (the active tab
+    is a desaturated white pill), not a text one — so these text-only blocks
+    are intentionally ambiguous as to the active day. They exercise the
+    Daily-Rank page detection and the "text alone can't pick a day" path; real
+    active-day detection is covered by the colour-based fixture tests.
     """
     return [
         make_block("RANKING",       300,  80),
@@ -235,13 +237,11 @@ def friday_daily_blocks():
         make_block("Rank",          195, 180),
         make_block("Weekly",        350, 180),
         make_block("Rank",          400, 180),
-        # Inactive tabs — with trailing period
         make_block("Mon.",           75, 260),
         make_block("Tues.",         185, 260),
         make_block("Wed.",          295, 260),
         make_block("Thur.",         405, 260),
-        # Active tab — no trailing period (scores +2 vs +1 for inactive tabs)
-        make_block("Fri",           515, 260),
+        make_block("Fri.",          515, 260),
         make_block("Sat.",          620, 260),
         make_block("Ranking",        80, 340),
         make_block("Commander",     300, 340),
