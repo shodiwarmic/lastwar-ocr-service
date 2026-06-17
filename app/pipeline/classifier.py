@@ -15,8 +15,9 @@ Classification priority order (prevents mis-routing):
     1. Strength Ranking      — unique header + different tab set, caught first
     2. Alliance Contribution — multi-row tab groups joined as `{cat}_{period}`
     3. Weekly Rank           — "Weekly Rank" tab is orange, no day tabs active
-    4. Daily Rank day        — bounding-box colour sampling of each day tab
-    5. Daily Rank text       — scoring fallback when image not available (tests)
+    4. Daily Rank day        — least-saturated bounding-box colour sampling
+    5. Daily Rank text       — only when a single day tab is present (degenerate
+                               crop / no image); ambiguous tab bars return None
 
 Coordinates used inside per-tab colour sampling come from OCR bounding boxes
 (not normalised image fractions), so the classifier degrades gracefully when
@@ -101,7 +102,7 @@ def classify_from_ocr_text(
                      extra={"image_filename": filename})
         return "weekly", 1.0
 
-    # 4. Daily Rank — bounding-box colour sampling of each day tab region
+    # 4. Daily Rank — least-saturated bounding-box colour sampling of day tabs
     if image is not None:
         day = _detect_active_day_by_color(image, text_blocks)
         if day:
@@ -109,10 +110,10 @@ def classify_from_ocr_text(
                          extra={"image_filename": filename, "day": day})
             return day, 0.95
 
-    # 5. Daily Rank — text scoring fallback when no image is available
+    # 5. Daily Rank — text fallback, only resolves an unambiguous single day tab
     day = _ocr_detect_active_day_by_text(text_blocks)
     if day:
-        logger.debug("Pass 2: Daily Rank detected via text scoring fallback",
+        logger.debug("Pass 2: Daily Rank detected via single-tab text fallback",
                      extra={"image_filename": filename, "day": day})
         return day, 0.75
 
@@ -149,22 +150,31 @@ def _detect_active_day_by_color(
     text_blocks: list[dict],
 ) -> Optional[str]:
     """
-    Identifies the active day tab by comparing background brightness across
+    Identifies the active day tab by comparing background *saturation* across
     all day tab regions.
 
     Observation from real screenshots:
-        The active day tab has a WHITE/LIGHT background (high V, low S).
-        Inactive tabs have a GREY background (lower V, slightly warmer).
-        The orange colour is on the top-level "Daily Rank" tab, NOT the day row.
+        The active day tab is a desaturated near-white pill; inactive tabs are
+        warm grey. (The orange colour lives on the top-level "Daily Rank" tab,
+        not the day row.)
 
-        Active tab:   V ≈ 0.74–0.81, S ≈ 0.019–0.025  (white/light)
-        Inactive tab: V ≈ 0.67–0.70, S ≈ 0.090–0.094  (warm grey)
+        Active tab:   S ≈ 0.019–0.026   (white/light)
+        Inactive tab: S ≈ 0.086–0.095   (warm grey)
+
+    Why saturation, not brightness:
+        The active pill carries bold *dark* glyphs, so colour-sampling its text
+        bbox drags the mean V down to within ~0.02 of an inactive tab — a margin
+        that sits on top of per-frame OCR-bbox jitter and inverts unpredictably
+        (the same Monday screenshot measured a 0.032 brightness gap standalone
+        but only 0.0235 once stitched, which fell under min_gap and mis-routed
+        to Thursday via the text fallback — batch 7038e97, 2026-06-16).
+        Saturation gives a ~0.07 gap in every context and never inverts.
 
     Strategy:
-        Sample the background colour of every day tab bounding box.
-        Return the day whose crop has the highest brightness (V value).
-        To avoid false positives from image noise, require that the brightest
-        tab is at least BRIGHTNESS_GAP brighter than the second-brightest.
+        Sample the mean colour of every day tab bounding box and pick the
+        LOWEST-saturation tab. To avoid a false positive on a screen where no
+        tab is actually active, require the winner's saturation to be at or
+        below `max_saturation` and to lead the next-lowest by `min_saturation_gap`.
 
     Args:
         image:       PIL Image of the screenshot.
@@ -178,13 +188,15 @@ def _detect_active_day_by_color(
     daily_defn = get_definition("daily_ranking")
     if daily_defn and daily_defn.tabs:
         ai = daily_defn.tabs.active_indicator
-        BRIGHTNESS_GAP = ai.min_gap
+        MAX_SATURATION = ai.max_saturation
+        MIN_SATURATION_GAP = ai.min_saturation_gap
         PAD = max(1, round(img_w * ai.bbox_padding_fraction))
     else:
-        BRIGHTNESS_GAP = 0.04
+        MAX_SATURATION = 0.06
+        MIN_SATURATION_GAP = 0.03
         PAD = max(1, round(img_w * 0.007))
 
-    day_brightness: dict[str, float] = {}
+    day_saturation: dict[str, float] = {}
 
     for block in text_blocks:
         text = block["text"].strip()
@@ -219,30 +231,41 @@ def _detect_active_day_by_color(
                 "crop_box": f"({left},{top},{right},{bottom})",
                 "avg_rgb": f"rgb({r},{g},{b})",
                 "hsv": f"s={s:.3f} v={v:.3f}",
-                "brightness": round(v, 3),
+                "saturation": round(s, 3),
             },
         )
 
-        # Keep the highest brightness seen per day (handles duplicate tokens)
-        if canonical not in day_brightness or v > day_brightness[canonical]:
-            day_brightness[canonical] = v
+        # Keep the lowest saturation seen per day (active pill is desaturated;
+        # handles duplicate tokens for the same day)
+        if canonical not in day_saturation or s < day_saturation[canonical]:
+            day_saturation[canonical] = s
 
-    if not day_brightness:
+    if not day_saturation:
         return None
 
-    # Sort by brightness descending
-    ranked = sorted(day_brightness.items(), key=lambda x: x[1], reverse=True)
+    # Sort by saturation ascending — the active (white-pill) tab is lowest.
+    ranked = sorted(day_saturation.items(), key=lambda x: x[1])
 
-    best_day, best_v = ranked[0]
+    best_day, best_s = ranked[0]
 
-    # Require a clear brightness gap to avoid noise returning a wrong result
+    # The winner must actually look like a desaturated white pill, not just be
+    # the least-saturated of a row of grey tabs.
+    if best_s > MAX_SATURATION:
+        logger.debug(
+            "Tab colour sampling inconclusive — no tab below max_saturation",
+            extra={"best": best_day, "best_s": round(best_s, 3),
+                   "max_saturation": MAX_SATURATION},
+        )
+        return None
+
+    # Require a clear saturation gap to avoid noise returning a wrong result.
     if len(ranked) > 1:
-        second_v = ranked[1][1]
-        if best_v - second_v < BRIGHTNESS_GAP:
+        second_s = ranked[1][1]
+        if second_s - best_s < MIN_SATURATION_GAP:
             logger.debug(
-                "Tab colour sampling inconclusive — brightness gap too small",
-                extra={"best": best_day, "best_v": round(best_v, 3),
-                       "second_v": round(second_v, 3), "gap": round(best_v - second_v, 3)},
+                "Tab colour sampling inconclusive — saturation gap too small",
+                extra={"best": best_day, "best_s": round(best_s, 3),
+                       "second_s": round(second_s, 3), "gap": round(second_s - best_s, 3)},
             )
             return None
 
@@ -568,15 +591,23 @@ def _ocr_detect_active_day_by_text(
     all_text_lower: set[str] = None,  # accepted but unused — kept for backward compat
 ) -> Optional[str]:
     """
-    Text-only fallback for day detection when no PIL image is available.
+    Text-only fallback for day detection when colour sampling is unavailable
+    or inconclusive.
 
-    Used in unit tests that pass OCR fixture text blocks without an image.
-    Scores each day token: +2 for no trailing period (active tab signal),
-    +1 for with period (inactive tab). Returns the highest-scoring day.
+    Returns a day ONLY when exactly one distinct day label is present in the
+    blocks (an unambiguous crop). When the full Mon.–Sat. tab bar is present,
+    text alone cannot tell which tab is active, so this returns None.
 
-    This is less reliable than colour sampling on real screenshots because
-    the no-period signal can appear in other OCR contexts (e.g. announcement
-    banners). Only used when image is not available.
+    Why it no longer scores by trailing period: the previous heuristic awarded
+    a day +2 when OCR read it without a trailing period, assuming the active
+    tab was styled differently. It is not — every tab carries a period, and
+    Cloud Vision reliably *drops* the period on "Thur" regardless of which day
+    is active (confirmed across devices: the pixel_10 Thursday fixture and the
+    pixel_fold batch 7038e97 both read it as "Thur"). That made the fallback
+    pick Thursday on every daily screen whenever colour sampling fell through —
+    exactly the misclassification this replaces. Emitting None (skip the
+    section) is safer than guessing a wrong day, which would corrupt a
+    different day's leaderboard.
 
     Args:
         text_blocks:    OCR text block dicts.
@@ -584,29 +615,18 @@ def _ocr_detect_active_day_by_text(
                         older call sites that passed a pre-computed token set.
 
     Returns:
-        Canonical day string or None.
+        Canonical day string when exactly one day is present, else None.
     """
-    DAY_ORDER = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday"]
-    NO_PERIOD = {"mon", "tues", "wed", "thur", "fri", "sat"}
+    days_present = {
+        canonical
+        for block in text_blocks
+        if (canonical := normalize_day_label(block["text"].strip())) is not None
+    }
 
-    scores: dict[str, int] = {}
+    if len(days_present) == 1:
+        return next(iter(days_present))
 
-    for block in text_blocks:
-        raw = block["text"].strip()
-        canonical = normalize_day_label(raw)
-        if canonical is None:
-            continue
-        is_no_period = raw.rstrip(".").lower() in NO_PERIOD and not raw.endswith(".")
-        points = 2 if is_no_period else 1
-        scores[canonical] = scores.get(canonical, 0) + points
-
-    if not scores:
-        return None
-
-    return max(
-        scores.keys(),
-        key=lambda d: (scores[d], -DAY_ORDER.index(d) if d in DAY_ORDER else 0),
-    )
+    return None
 
 
 def _avg_y_from_bbox(bbox) -> float:

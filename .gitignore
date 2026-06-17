@@ -39,3 +39,8 @@ deploy.sh
 # OCR fixtures contain raw API responses - commit intentionally, not accidentally
 # Remove this line if you want fixtures tracked automatically
 tests/fixtures/ocr_responses/*.json
+
+# Source screenshots backing the OCR fixtures — kept local-only (the corpus is
+# ~100 MB). Tests find them here when present and skip the colour-based day
+# checks when they're absent (e.g. CI / fresh clones).
+tests/fixtures/screenshots/

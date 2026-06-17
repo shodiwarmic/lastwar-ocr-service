@@ -81,8 +81,13 @@ class ChromeDef:
 
 @dataclass
 class TabActiveIndicator:
-    strategy: str = "brightest"  # "brightest" or "color_fraction"
+    strategy: str = "brightest"  # "brightest", "color_fraction", or "least_saturated"
     min_gap: float = 0.04
+    # `least_saturated` strategy thresholds (white-pill tab bars). The active
+    # tab is the lowest-saturation tab, provided its mean S is ≤ max_saturation
+    # and it leads the next-lowest by ≥ min_saturation_gap.
+    max_saturation: float = 0.06
+    min_saturation_gap: float = 0.03
     min_fraction: float = 0.10
     color: Optional[ColorDef] = None
     bbox_padding_fraction: float = 0.007
@@ -233,6 +238,8 @@ def _parse_tab_active_indicator(d: Optional[dict]) -> TabActiveIndicator:
     return TabActiveIndicator(
         strategy=d.get("strategy", "brightest"),
         min_gap=float(d.get("min_gap", 0.04)),
+        max_saturation=float(d.get("max_saturation", 0.06)),
+        min_saturation_gap=float(d.get("min_saturation_gap", 0.03)),
         min_fraction=float(d.get("min_fraction", 0.10)),
         color=_parse_color(d.get("color")) if d.get("color") else None,
         bbox_padding_fraction=float(d.get("bbox_padding_fraction", 0.007)),
