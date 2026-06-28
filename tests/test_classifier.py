@@ -397,3 +397,22 @@ def _try_load_source_image(source_file: str):
                 return img
 
     return None
+
+
+class TestConfidenceConstants:
+    """The named confidence constants must match the values the classifier emits,
+    so the diagnostics method-derivation (which keys off them) can't silently drift."""
+
+    def test_constant_values(self):
+        from app.models.schemas import (
+            CONFIDENCE_DEFINITIVE, CONFIDENCE_DAY_COLOR, CONFIDENCE_DAY_TEXT,
+        )
+        assert (CONFIDENCE_DEFINITIVE, CONFIDENCE_DAY_COLOR, CONFIDENCE_DAY_TEXT) == (1.0, 0.95, 0.75)
+
+    def test_classifier_emits_the_constants(self):
+        """The classifier imports and returns the constants (not bare literals),
+        so a change in one place propagates to both return site and derivation."""
+        from app.pipeline import classifier as clf
+        from app.models.schemas import CONFIDENCE_DAY_COLOR, CONFIDENCE_DAY_TEXT
+        assert clf.CONFIDENCE_DAY_COLOR is CONFIDENCE_DAY_COLOR
+        assert clf.CONFIDENCE_DAY_TEXT is CONFIDENCE_DAY_TEXT

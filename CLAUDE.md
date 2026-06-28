@@ -9,17 +9,28 @@ Flask microservice that ingests batches of *Last War: Survival* ranking screensh
 
 Engine is selected at runtime by the `OCR_ENGINE` environment variable (`cloud_vision` default, `paddleocr` for the local image). `app/pipeline/ocr_client.py` is the dispatch layer; `ocr_client_paddle.py` is the PaddleOCR implementation.
 
-**Single endpoint:** `POST /process-batch` — accepts `images[]` (up to 100 files), returns:
+**Single endpoint:** `POST /process-batch` — accepts `images[]` (up to 100 files), returns a `{results, diagnostics}` envelope:
 ```json
 {
-  "friday":          [{"player_name": "ShodiWarmic",      "score": 161528090}],
-  "power":           [{"player_name": "SirBucksALot",     "score": 218478394}],
-  "kills":           [{"player_name": "Charlie9042",      "score": 17886167}],
-  "donation_daily":  [{"player_name": "BlackIce2",        "score": 14800}],
-  "donation_weekly": [{"player_name": "CaptTrickster727", "score": 28300}]
+  "results": {
+    "friday":          [{"player_name": "ShodiWarmic",      "score": 161528090}],
+    "power":           [{"player_name": "SirBucksALot",     "score": 218478394}],
+    "donation_weekly": [{"player_name": "CaptTrickster727", "score": 28300}]
+  },
+  "diagnostics": { "schema_version": 1, "engine": "cloud_vision", "...": "see below" }
 }
 ```
-Only categories with data are included. Health check: `GET /health`.
+Only categories with data appear under `results`. The empty case is still `200` with `{"results": {}, "diagnostics": {...}, "warning": "..."}`; validation failures are `4xx {"error": ...}`. Health check: `GET /health`.
+
+### Diagnostics block
+
+A lightweight, structured per-batch classification trace, returned alongside every `200` so a misclassification can be triaged from the archive without re-running the pipeline. The Go backend persists it verbatim as `diagnostics.json`. Built in `routes.py` from `app/models/schemas.py` models (`BatchDiagnostics` → `BatchDiagnostic` / `SectionDiagnostic`), serialised with `model_dump(exclude_none=True)` (so `null` fields are omitted):
+
+- Top level: `schema_version`, `engine` (`cloud_vision`|`paddleocr`, from `ocr_client.active_engine()`), `image_count`, `batch_count`, `category_override`.
+- `batches[]`: `batch_index`, `stitched_size`, `source_images`, `cache_hit`.
+- `sections[]` (one per source image): `image`, `batch_index`, `y_range`, `category`, `confidence`, `method`, `players_found`, `cache_hit`, `note`.
+
+`method` (derived from `(category, confidence)` by `schemas.classification_method`, no classifier signature change) is one of `category_override`, `day_color_saturation`, `day_text_fallback`, `weekly_marker`, `strength_tab`, `alliance_contribution_tab`, `unclassified` — e.g. a section reading `thursday @ 0.75 / day_text_fallback` is the smoking-gun signal that colour sampling fell through to the fallback. `note` flags sections that yielded nothing: `no_ocr_blocks`, `classification_failed`, `no_players`, `ocr_failed`. Heavy artifacts (stitched images, raw OCR) are intentionally **not** here — those go to the Go backend's ephemeral bucket.
 
 ---
 

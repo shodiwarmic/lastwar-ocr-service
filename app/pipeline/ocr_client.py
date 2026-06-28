@@ -51,6 +51,19 @@ logger = get_logger(__name__)
 # image build.
 _ENGINE = os.environ.get("OCR_ENGINE", "cloud_vision").lower()
 
+
+def active_engine() -> str:
+    """
+    Returns the OCR backend this process actually uses (`cloud_vision` or
+    `paddleocr`).
+
+    Single source of truth for the engine: `_ENGINE` is frozen from the
+    environment at import time, so callers that need to report which backend
+    ran (e.g. the diagnostics `engine` field) should read it here rather than
+    re-reading os.environ, which could drift if the env changes post-import.
+    """
+    return _ENGINE
+
 # Cloud Vision SDK is imported lazily so the local image (which doesn't
 # install google-cloud-vision) doesn't blow up at module-import time.
 vision = None  # populated lazily by _import_vision() below

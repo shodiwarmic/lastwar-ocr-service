@@ -104,20 +104,36 @@ Content-Type: multipart/form-data
 Field:        images  (1–100 image files)
 ```
 
-**Response 200**
+**Response 200** — a `{results, diagnostics}` envelope:
 ```json
 {
-  "monday":           [{"player_name": "Charlie9042",      "score": 38686463}],
-  "friday":           [{"player_name": "SirBucksALot",     "score": 45635206}],
-  "weekly":           [{"player_name": "SirBucksALot",     "score": 161528090}],
-  "power":            [{"player_name": "MOJO DUDE",        "score": 218478394}],
-  "kills":            [{"player_name": "Charlie9042",      "score": 17886167}],
-  "donation_daily":   [{"player_name": "BlackIce2",        "score": 14800}],
-  "donation_weekly":  [{"player_name": "CaptTrickster727", "score": 28300}]
+  "results": {
+    "monday":           [{"player_name": "Charlie9042",      "score": 38686463}],
+    "friday":           [{"player_name": "SirBucksALot",     "score": 45635206}],
+    "power":            [{"player_name": "MOJO DUDE",        "score": 218478394}],
+    "donation_weekly":  [{"player_name": "CaptTrickster727", "score": 28300}]
+  },
+  "diagnostics": {
+    "schema_version": 1,
+    "engine": "cloud_vision",
+    "image_count": 1, "batch_count": 1, "category_override": null,
+    "batches":  [{"batch_index": 0, "stitched_size": [1080, 2400],
+                  "source_images": ["IMG_4358.png"], "cache_hit": false}],
+    "sections": [{"image": "IMG_4358.png", "batch_index": 0, "y_range": [483, 2900],
+                  "category": "friday", "confidence": 0.95, "method": "day_color_saturation",
+                  "players_found": 8, "cache_hit": false}]
+  }
 }
 ```
 
-Only categories with extracted data are included in the response.
+Player data lives under `results` (only categories with data appear). `diagnostics` is a
+lightweight, structured classification trace — per source image: which `category` it became,
+the `confidence`, and the `method` (`day_color_saturation`, `day_text_fallback`,
+`category_override`, `weekly_marker`, `strength_tab`, `alliance_contribution_tab`,
+`unclassified`); `note` (`no_ocr_blocks` / `classification_failed` / `no_players` /
+`ocr_failed`) flags sections that produced no players. `null` fields are omitted. The empty
+case is still `200` with `{"results": {}, "diagnostics": {...}, "warning": "..."}`; input
+validation failures return `4xx {"error": "..."}`.
 
 | Category | Screen |
 |---|---|

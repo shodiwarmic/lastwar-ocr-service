@@ -15,7 +15,19 @@ which omits empty categories so the caller only sees days that had data.
 from __future__ import annotations
 
 from typing import Optional
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
+
+
+# ---------------------------------------------------------------------------
+# Classification confidence levels
+# ---------------------------------------------------------------------------
+# Canonical confidence values returned by classify_from_ocr_text(). Named here
+# (rather than as magic numbers in classifier.py) so both the classifier's
+# return sites and the diagnostics method-derivation reference one source of
+# truth. Kept in schemas to avoid a classifier→schemas import cycle.
+CONFIDENCE_DEFINITIVE = 1.0   # unique header / tab marker (strength, AC, weekly)
+CONFIDENCE_DAY_COLOR = 0.95   # day tab resolved by colour (saturation) sampling
+CONFIDENCE_DAY_TEXT = 0.75    # day tab resolved by the single-tab text fallback
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +134,67 @@ VALID_CATEGORIES = frozenset({
     "defeat_daily",              "defeat_weekly",              "defeat_season",
 })
 
+# Category groups by screen family — used to derive the diagnostics `method`
+# label from a (category, confidence) pair without changing the classifier's
+# return signature. Subsets of VALID_CATEGORIES.
+DAY_CATEGORIES = frozenset({
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday",
+})
+STRENGTH_CATEGORIES = frozenset({
+    "power", "kills", "donation_daily", "donation_weekly",
+})
+SEASON_CONTRIBUTION_CATEGORIES = frozenset({
+    "mutual_assistance_daily",   "mutual_assistance_weekly",   "mutual_assistance_season",
+    "siege_daily",               "siege_weekly",               "siege_season",
+    "rare_soil_war_daily",       "rare_soil_war_weekly",       "rare_soil_war_season",
+    "defeat_daily",              "defeat_weekly",              "defeat_season",
+})
+
+
+def classification_method(
+    category: Optional[str],
+    confidence: float,
+    *,
+    override: bool,
+) -> str:
+    """
+    Derives a human-readable diagnostic label for how a section was classified.
+
+    Pure function of the classifier's observable output — the category encodes
+    the screen family, and the confidence encodes which day-detection path ran
+    (colour sampling vs the text fallback). Keeping this derivation here avoids
+    widening classify_from_ocr_text()'s return signature across its many call
+    sites.
+
+    Args:
+        category:   Resolved category, or None if classification produced none.
+        confidence: Confidence returned alongside the category.
+        override:   True when the caller supplied `category=` (classification
+                    was bypassed — e.g. the local PaddleOCR path).
+
+    Returns:
+        One of: category_override, day_color_saturation, day_text_fallback,
+        weekly_marker, strength_tab, alliance_contribution_tab, unclassified.
+    """
+    if override:
+        return "category_override"
+    if category is None:
+        return "unclassified"
+    if category in DAY_CATEGORIES:
+        return (
+            "day_color_saturation"
+            if confidence >= CONFIDENCE_DAY_COLOR
+            else "day_text_fallback"
+        )
+    if category == "weekly":
+        return "weekly_marker"
+    if category in STRENGTH_CATEGORIES:
+        return "strength_tab"
+    if category in SEASON_CONTRIBUTION_CATEGORIES:
+        return "alliance_contribution_tab"
+    return "unclassified"
+
+
 # Human-readable label for each category (used in logs and documentation)
 CATEGORY_LABELS = {
     "monday":           "Daily Rank — Monday",
@@ -208,3 +281,53 @@ class BatchResult:
     def category_count(self, category: str) -> int:
         """Returns the number of entries in a given category."""
         return len(self._data.get(category, []))
+
+
+# ---------------------------------------------------------------------------
+# Diagnostics (returned alongside results in the response envelope)
+# ---------------------------------------------------------------------------
+
+class SectionDiagnostic(BaseModel):
+    """
+    Per-source-image classification trace for one section of a stitched batch.
+
+    The minimal "why" record: which image became which category, how confident,
+    via which method, and how many players it yielded. `note` flags sections
+    that produced nothing (and why). `category`/`note` are None when absent and
+    are dropped from the wire by model_dump(exclude_none=True).
+    """
+    image: str
+    batch_index: int
+    y_range: tuple[int, int]
+    category: Optional[str] = None
+    confidence: float
+    method: str
+    players_found: int
+    cache_hit: bool = False
+    note: Optional[str] = None
+
+
+class BatchDiagnostic(BaseModel):
+    """Per-stitched-batch record: which source images were stitched together."""
+    batch_index: int
+    stitched_size: tuple[int, int]
+    source_images: list[str]
+    cache_hit: bool = False
+
+
+class BatchDiagnostics(BaseModel):
+    """
+    Top-level diagnostics block returned under the response `diagnostics` key.
+
+    Lightweight and structured — intended to be persisted verbatim by the Go
+    backend as `diagnostics.json` next to the request in the archive. Heavy
+    artifacts (stitched images, raw OCR) are intentionally not included here.
+    `schema_version` lets consumers treat unknown future fields as additive.
+    """
+    schema_version: int = 1
+    engine: str
+    image_count: int
+    batch_count: int
+    category_override: Optional[str] = None
+    batches: list[BatchDiagnostic] = Field(default_factory=list)
+    sections: list[SectionDiagnostic] = Field(default_factory=list)

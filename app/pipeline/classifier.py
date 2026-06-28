@@ -31,6 +31,11 @@ from typing import Optional
 
 from PIL import Image
 
+from app.models.schemas import (
+    CONFIDENCE_DEFINITIVE,
+    CONFIDENCE_DAY_COLOR,
+    CONFIDENCE_DAY_TEXT,
+)
 from app.pipeline.screen_definitions import get_definition
 from app.utils.text_utils import normalize_day_label
 from app.utils.logger import get_logger
@@ -79,7 +84,7 @@ def classify_from_ocr_text(
             "Pass 2: Strength Ranking detected via OCR",
             extra={"image_filename": filename, "active_tab": category},
         )
-        return category, 1.0
+        return category, CONFIDENCE_DEFINITIVE
 
     # 2. Alliance Contribution — unique title; row-1 (orange) + row-2 (brightest)
     if _ocr_detect_alliance_contribution(all_text_lower):
@@ -89,7 +94,7 @@ def classify_from_ocr_text(
                 "Pass 2: Alliance Contribution detected via OCR",
                 extra={"image_filename": filename, "active_tab": category},
             )
-            return category, 1.0
+            return category, CONFIDENCE_DEFINITIVE
         logger.warning(
             "Pass 2: Alliance Contribution detected but tab resolution failed",
             extra={"image_filename": filename},
@@ -100,7 +105,7 @@ def classify_from_ocr_text(
     if _ocr_detect_weekly(all_text_lower):
         logger.debug("Pass 2: Weekly Rank detected via OCR",
                      extra={"image_filename": filename})
-        return "weekly", 1.0
+        return "weekly", CONFIDENCE_DEFINITIVE
 
     # 4. Daily Rank — least-saturated bounding-box colour sampling of day tabs
     if image is not None:
@@ -108,14 +113,14 @@ def classify_from_ocr_text(
         if day:
             logger.debug("Pass 2: Daily Rank detected via bounding-box colour sampling",
                          extra={"image_filename": filename, "day": day})
-            return day, 0.95
+            return day, CONFIDENCE_DAY_COLOR
 
     # 5. Daily Rank — text fallback, only resolves an unambiguous single day tab
     day = _ocr_detect_active_day_by_text(text_blocks)
     if day:
         logger.debug("Pass 2: Daily Rank detected via single-tab text fallback",
                      extra={"image_filename": filename, "day": day})
-        return day, 0.75
+        return day, CONFIDENCE_DAY_TEXT
 
     logger.warning(
         "Pass 2: OCR classification failed — no definitive markers found",

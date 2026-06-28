@@ -208,7 +208,7 @@ class TestProcessBatchMocked:
         )
 
         assert response.status_code == 200
-        data = response.get_json()
+        data = response.get_json()["results"]
         assert "friday" in data
         assert data["friday"][0]["player_name"] == "SirBucksALot"
         assert data["friday"][0]["score"] == 45_635_206
@@ -239,6 +239,8 @@ class TestProcessBatchMocked:
         assert response.status_code == 200
         data = response.get_json()
         assert "warning" in data
+        assert data["results"] == {}
+        assert "diagnostics" in data  # diagnostics present even when nothing extracted
 
     @patch("app.routes.run_ocr")
     @patch("app.routes.extract_text_blocks")
@@ -269,7 +271,7 @@ class TestProcessBatchMocked:
             mock_classify.assert_not_called()
 
         assert response.status_code == 200
-        data = response.get_json()
+        data = response.get_json()["results"]
         assert "siege_daily" in data
         assert data["siege_daily"][0]["player_name"] == "DocHollagoon"
 
@@ -299,7 +301,7 @@ class TestProcessBatchMocked:
                 data={"images": png_file_storage("test.png"), "category": category},
             )
             assert response.status_code == 200
-            data = response.get_json()
+            data = response.get_json()["results"]
             assert category in data, f"Expected key '{category}' in response"
 
     @patch("app.routes.run_ocr")
@@ -337,7 +339,7 @@ class TestProcessBatchMocked:
             )
 
         assert response.status_code == 200
-        data = response.get_json()
+        data = response.get_json()["results"]
         entry = data["mutual_assistance_weekly"][0]
         assert entry["player_name"] == "Ruthless5432"
         assert "candidates" in entry
@@ -368,7 +370,7 @@ class TestProcessBatchMocked:
                 data={"images": png_file_storage("test.png")},
             )
 
-        entry = response.get_json()["mutual_assistance_weekly"][0]
+        entry = response.get_json()["results"]["mutual_assistance_weekly"][0]
         assert "candidates" not in entry
 
     @patch("app.routes.classify_from_ocr_text")
@@ -417,9 +419,171 @@ class TestProcessBatchMocked:
         )
 
         assert response.status_code == 200
-        data = response.get_json()
+        data = response.get_json()["results"]
         assert "friday" in data
         assert "power" in data
+
+
+_ONE_BLOCK = [{"text": "x", "bbox": {}, "avg_x": 100.0, "avg_y": 1200.0}]
+
+
+class TestClassificationMethod:
+    """Unit tests for the diagnostics `method` derivation (schemas.classification_method)."""
+
+    def test_derivation_branches(self):
+        from app.models.schemas import classification_method as cm
+        assert cm("monday", 1.0, override=True) == "category_override"
+        assert cm("thursday", 0.95, override=False) == "day_color_saturation"
+        assert cm("thursday", 0.75, override=False) == "day_text_fallback"
+        assert cm("weekly", 1.0, override=False) == "weekly_marker"
+        assert cm("power", 1.0, override=False) == "strength_tab"
+        assert cm("siege_daily", 1.0, override=False) == "alliance_contribution_tab"
+        assert cm(None, 0.0, override=False) == "unclassified"
+
+
+class TestProcessBatchDiagnostics:
+    """The `diagnostics` block in the {results, diagnostics} response envelope."""
+
+    @patch("app.routes.classify_from_ocr_text", return_value=("thursday", 0.75))
+    @patch("app.routes.run_ocr", return_value=(MagicMock(), "h_diag1"))
+    @patch("app.routes.extract_text_blocks", return_value=_ONE_BLOCK)
+    @patch("app.routes.extract_players")
+    def test_envelope_sections_and_batches(
+        self, mock_extract, mock_blocks, mock_ocr, mock_classify, client
+    ):
+        from app.models.schemas import PlayerEntry
+        mock_extract.return_value = [PlayerEntry(player_name="Repsalix", score=3_870_000)]
+
+        resp = client.post(
+            "/process-batch",
+            content_type="multipart/form-data",
+            data={"images": png_file_storage("image_01.png")},
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert set(data) >= {"results", "diagnostics"}
+
+        diag = data["diagnostics"]
+        assert diag["schema_version"] == 1
+        assert diag["engine"] == "cloud_vision"
+        assert diag["image_count"] == 1
+        assert diag["batch_count"] == 1
+        assert diag.get("category_override") is None  # null override dropped by exclude_none
+
+        batch = diag["batches"][0]
+        assert batch["source_images"] == ["image_01.png"]
+        assert len(batch["stitched_size"]) == 2
+        assert batch["cache_hit"] is False
+
+        sec = diag["sections"][0]
+        assert sec["image"] == "image_01.png"
+        assert sec["category"] == "thursday"
+        assert sec["confidence"] == 0.75
+        assert sec["method"] == "day_text_fallback"
+        assert sec["players_found"] == 1
+        assert sec["cache_hit"] is False
+        assert "note" not in sec  # None dropped by exclude_none
+
+    @patch("app.routes.run_ocr", return_value=(MagicMock(), "h_diag2"))
+    @patch("app.routes.extract_text_blocks", return_value=_ONE_BLOCK)
+    @patch("app.routes.extract_players")
+    def test_category_override_in_diagnostics(
+        self, mock_extract, mock_blocks, mock_ocr, client
+    ):
+        from app.models.schemas import PlayerEntry
+        mock_extract.return_value = [PlayerEntry(player_name="DocHollagoon", score=21_000)]
+
+        resp = client.post(
+            "/process-batch",
+            content_type="multipart/form-data",
+            data={"images": png_file_storage("siege.png"), "category": "siege_daily"},
+        )
+        diag = resp.get_json()["diagnostics"]
+        assert diag["category_override"] == "siege_daily"
+        assert diag["sections"][0]["method"] == "category_override"
+        assert diag["sections"][0]["confidence"] == 1.0
+
+    @patch("app.routes.active_engine", return_value="paddleocr")
+    @patch("app.routes.run_ocr", return_value=(MagicMock(), "h_paddle"))
+    @patch("app.routes.extract_text_blocks", return_value=_ONE_BLOCK)
+    @patch("app.routes.extract_players")
+    def test_local_paddle_engine_reported(
+        self, mock_extract, mock_blocks, mock_ocr, mock_engine, client
+    ):
+        """Local sidecar path: engine=paddleocr, classification bypassed via override."""
+        from app.models.schemas import PlayerEntry
+        mock_extract.return_value = [PlayerEntry(player_name="BlackIce2", score=14_800)]
+
+        resp = client.post(
+            "/process-batch",
+            content_type="multipart/form-data",
+            data={"images": png_file_storage("p.png"), "category": "donation_daily"},
+        )
+        diag = resp.get_json()["diagnostics"]
+        assert diag["engine"] == "paddleocr"
+        assert diag["sections"][0]["method"] == "category_override"
+
+    @patch("app.routes.classify_from_ocr_text", return_value=("thursday", 0.75))
+    @patch("app.routes.run_ocr", return_value=(MagicMock(), "h_diag3"))
+    @patch("app.routes.extract_text_blocks", return_value=_ONE_BLOCK)
+    @patch("app.routes.extract_players")
+    def test_cache_hit_restamps_filename(
+        self, mock_extract, mock_blocks, mock_ocr, mock_classify, client
+    ):
+        """Same image bytes re-uploaded under a different filename: the cache hit
+        must re-stamp the section `image` to the current request's filename."""
+        from app.models.schemas import PlayerEntry
+        mock_extract.return_value = [PlayerEntry(player_name="Repsalix", score=3_870_000)]
+
+        first = client.post(
+            "/process-batch", content_type="multipart/form-data",
+            data={"images": png_file_storage("first.png")},
+        )
+        assert first.get_json()["diagnostics"]["sections"][0]["cache_hit"] is False
+
+        # Identical bytes (same size/colour), different filename → cache hit.
+        second = client.post(
+            "/process-batch", content_type="multipart/form-data",
+            data={"images": png_file_storage("second.png")},
+        )
+        sec = second.get_json()["diagnostics"]["sections"][0]
+        assert sec["cache_hit"] is True
+        assert sec["image"] == "second.png"   # re-stamped, not the cached "first.png"
+        assert second.get_json()["results"]["thursday"][0]["player_name"] == "Repsalix"
+
+    @patch("app.routes.classify_from_ocr_text", return_value=("thursday", 0.75))
+    @patch("app.routes.run_ocr", return_value=(MagicMock(), "h_np"))
+    @patch("app.routes.extract_text_blocks", return_value=_ONE_BLOCK)
+    @patch("app.routes.extract_players", return_value=[])
+    def test_no_players_note_and_diagnostics_on_empty(
+        self, mock_extract, mock_blocks, mock_ocr, mock_classify, client
+    ):
+        resp = client.post(
+            "/process-batch", content_type="multipart/form-data",
+            data={"images": png_file_storage("blank.png")},
+        )
+        data = resp.get_json()
+        assert data["results"] == {}
+        assert "warning" in data
+        sec = data["diagnostics"]["sections"][0]
+        assert sec["players_found"] == 0
+        assert sec["note"] == "no_players"
+
+    @patch("app.routes.classify_from_ocr_text", return_value=("thursday", 0.75))
+    @patch("app.routes.run_ocr", return_value=(MagicMock(), "h_nb"))
+    @patch("app.routes.extract_text_blocks", return_value=[])
+    @patch("app.routes.extract_players")
+    def test_no_ocr_blocks_note(
+        self, mock_extract, mock_blocks, mock_ocr, mock_classify, client
+    ):
+        resp = client.post(
+            "/process-batch", content_type="multipart/form-data",
+            data={"images": png_file_storage("empty.png")},
+        )
+        sec = resp.get_json()["diagnostics"]["sections"][0]
+        assert sec["note"] == "no_ocr_blocks"
+        assert sec["method"] == "unclassified"
+        assert "category" not in sec  # None dropped
 
 
 # ---------------------------------------------------------------------------
@@ -512,7 +676,7 @@ class TestProcessBatchRealFixtures:
                 )
 
         assert response.status_code == 200
-        data = response.get_json()
+        data = response.get_json()["results"]
         assert expected_category in data, (
             f"Fixture '{fixture_name}': expected category '{expected_category}' "
             f"in response keys {list(data.keys())}"
