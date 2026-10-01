@@ -149,6 +149,15 @@ validation failures return `4xx {"error": "..."}`.
 | `kills` | Strength Ranking — Kills tab |
 | `donation_daily` | Strength Ranking — Donation tab, Daily sub-tab |
 | `donation_weekly` | Strength Ranking — Donation tab, Weekly sub-tab |
+| `mutual_assistance_*`, `siege_*`, `rare_soil_war_*`, `defeat_*` (`_daily` / `_weekly` / `_season`) | Alliance Contribution |
+| `alliance_exercise` | "[Alliance Exercise] Alliance Reward" mail — damage, MVP card as rank 1 |
+| `zombie_siege` | "Zombie Siege Report (Alliance)" mail — waves |
+| `desert_storm` | "[Desert Storm] Battle Results!" mail — individual points |
+
+The mails are read only when the request names the category: the classifier never picks
+one. Their rows carry `rank` (and `rank_inferred` / `score_unread` where they apply), and
+each section's diagnostics carry the `mail_timestamp` line in the capturing phone's local
+time, and `note: "no_rows_below_header"` for a collapsed list.
 
 **Response 400** — missing or invalid input (no images, too many images, non-image files), an
 unknown `category` (`code: "category_not_supported"`), or an unsupported `schema_version`

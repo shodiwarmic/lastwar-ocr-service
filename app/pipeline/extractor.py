@@ -32,6 +32,7 @@ Known edge cases handled:
 from __future__ import annotations
 
 from app.models.schemas import PlayerEntry, ScoreCandidate
+from app.pipeline import column_scoped
 from app.pipeline import ranks as rank_checksum
 from app.pipeline.screen_definitions import RowClusteringConfig, get_definition_for_category
 from app.utils.text_utils import (
@@ -72,6 +73,7 @@ def extract_players(
     image_height: int = 2400,
     image_width: int = 1080,
     report: dict | None = None,
+    y_offset: float = 0.0,
 ) -> list[PlayerEntry]:
     """
     Converts a flat list of OCR text blocks into a list of PlayerEntry objects.
@@ -96,7 +98,11 @@ def extract_players(
                       the relative gap threshold for word spacing detection.
         report:       Optional dict the section's diagnostics are written
                       into: `ranks` (the rank checksum, see ranks.py) and
-                      `order_violations`.
+                      `order_violations`; for a mail also `mail_timestamp`
+                      and possibly `note`.
+        y_offset:     Where this section starts in the stitched image the
+                      block coordinates are in. Only column_scoped screens
+                      need it (their boundaries are fractions of the frame).
 
     Returns:
         List of validated PlayerEntry objects. Empty list if no valid rows found.
@@ -107,6 +113,10 @@ def extract_players(
 
     defn = get_definition_for_category(screen_type)
     row_config = defn.row_clustering if defn else RowClusteringConfig()
+
+    if row_config.strategy == "column_scoped":
+        return _extract_column_scoped(text_blocks, defn, screen_type, image_height,
+                                      image_width, y_offset, report)
     rank_column = rank_checksum.rank_column(defn)
     rank_tolerance = rank_checksum.RANK_Y_TOLERANCE_FRACTION * image_height
 
@@ -251,6 +261,32 @@ def extract_players(
         },
     )
 
+    return players
+
+
+def _extract_column_scoped(text_blocks, defn, screen_type, image_height, image_width,
+                           y_offset, report) -> list[PlayerEntry]:
+    """The post-event mails: see app/pipeline/column_scoped.py. None of the
+    score_anchored cleaning below applies — names come back as read."""
+    rows, section_report = column_scoped.extract(
+        text_blocks, defn, image_height, image_width, y_offset)
+    if report is not None:
+        report.update(section_report)
+    players = []
+    for row in rows:
+        try:
+            players.append(PlayerEntry(
+                player_name=row["name"], score=row["score"], rank=row["rank"],
+                rank_inferred=True if row["rank_source"] == "inferred" else None,
+                score_unread=True if row["score_unread"] else None,
+            ))
+        except Exception:
+            continue
+    logger.info(
+        "Extraction complete",
+        extra={"screen_type": screen_type, "blocks_input": len(text_blocks),
+               "players_found": len(players)},
+    )
     return players
 
 
@@ -509,8 +545,9 @@ def is_valid_player_row(name: str, score, min_score: int = MIN_VALID_SCORE) -> b
 
     Rejects:
     - Empty names
-    - None or zero scores
-    - Scores below min_score (filters out rank numbers 1–100)
+    - None scores
+    - Scores below min_score (filters out rank numbers 1–100). With a
+      min_score of 0, a zero score passes.
     - Names that match known UI labels (column headers, tab names)
 
     Args:

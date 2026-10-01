@@ -19,6 +19,20 @@ The first versioned release. Every earlier image was unversioned: GHCR's `:lates
   callers written before it keep working.
 - **`/health` reports capabilities:** `version`, `commit`, `schema_versions`, `categories`.
 
+### Added
+
+- **The three post-event mails:** categories `alliance_exercise`, `zombie_siege` and
+  `desert_storm`, read when the request names them (the classifier never picks a mail). The
+  Alliance Exercise MVP card comes back as rank 1; a Zombie Siege row with zero waves is kept
+  (a score may now be 0); a row whose score cell could not be read is kept with
+  `score_unread: true`. Each section reports the mail's `mail_timestamp`, and a collapsed
+  list is noted as `no_rows_below_header`.
+- **Ranks.** Every row carries the `rank` read beside it, or `rank_inferred: true` where its
+  neighbours settle it, and each section reports a rank checksum (`ranks`: gaps,
+  duplicates, out-of-order) and `order_violations`. Values are never repaired.
+- **Categories come from the screen definitions**, so a new screen's category is not a code
+  change. Alliance Contribution keys now resolve to their own definition's settings.
+
 ### Fixed
 
 - The result cache was keyed on the image bytes alone, so the same frames sent under a second

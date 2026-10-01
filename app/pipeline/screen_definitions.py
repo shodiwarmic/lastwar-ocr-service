@@ -8,12 +8,12 @@ using hardcoded constants, so tuning a tab position, colour threshold, or
 crop fraction only requires editing the YAML files in app/screen_definitions/.
 
 Bundled definition layout (relative to this file's parent package):
-    app/screen_definitions/catalog.yaml
-    app/screen_definitions/screens/daily_ranking.yaml
-    app/screen_definitions/screens/weekly_ranking.yaml
-    app/screen_definitions/screens/strength_metrics.yaml
-    app/screen_definitions/screens/strength_donation.yaml
-    app/screen_definitions/screens/season_contribution.yaml
+    app/screen_definitions/catalog.yaml      the screens, in priority order
+    app/screen_definitions/meta-schema.json  what every screen file must satisfy
+    app/screen_definitions/screens/*.yaml    one file per screen
+
+The categories this service reads are derived from the definitions
+(`all_categories`), so a new screen's category needs no code change here.
 
 All definitions are parsed once and cached via @lru_cache.
 """
@@ -142,13 +142,37 @@ class YProximityConfig:
 
 
 @dataclass
+class ColumnScopedConfig:
+    up_band_fraction: float = 0.03
+    down_band_fraction: float = 0.004
+
+
+@dataclass
 class RowClusteringConfig:
     strategy: str = "score_anchored"
     score_anchored: ScoreAnchoredConfig = field(default_factory=ScoreAnchoredConfig)
     y_proximity: YProximityConfig = field(default_factory=YProximityConfig)
+    column_scoped: ColumnScopedConfig = field(default_factory=ColumnScopedConfig)
     min_score: int = 1000
+    score_format: str = "plain"  # "plain" or "suffixed"
+    label_tokens: list[str] = field(default_factory=list)
     word_gap_fraction: float = 0.015
     min_word_gap_px: int = 8
+
+
+@dataclass
+class FixedRowDef:
+    rank: int = 1
+    value_label: str = ""
+    skip_labels: list[str] = field(default_factory=list)
+    region: str = "above_header"
+
+
+@dataclass
+class ElementsDef:
+    fixed_rows: list[FixedRowDef] = field(default_factory=list)
+    # The timestamp line's search region, or None when the screen has none.
+    timestamp: Optional[NormalizedRegion] = None
 
 
 @dataclass
@@ -166,6 +190,9 @@ class ScreenDefinition:
     tabs: Optional[TabsDef]
     columns: list[ColumnDef]
     row_clustering: RowClusteringConfig
+    # The wire category of a screen with no tab bar ("" when it has one).
+    category: str = ""
+    elements: ElementsDef = field(default_factory=ElementsDef)
 
 
 # ---------------------------------------------------------------------------
@@ -291,6 +318,7 @@ def _parse_row_clustering(d: Optional[dict]) -> RowClusteringConfig:
         return RowClusteringConfig()
     sa_raw = d.get("score_anchored") or {}
     yp_raw = d.get("y_proximity") or {}
+    cs_raw = d.get("column_scoped") or {}
     return RowClusteringConfig(
         strategy=d.get("strategy", "score_anchored"),
         score_anchored=ScoreAnchoredConfig(
@@ -301,9 +329,36 @@ def _parse_row_clustering(d: Optional[dict]) -> RowClusteringConfig:
             tolerance_fraction=float(yp_raw.get("tolerance_fraction", 0.02)),
             min_tolerance_px=int(yp_raw.get("min_tolerance_px", 20)),
         ),
+        column_scoped=ColumnScopedConfig(
+            up_band_fraction=float(cs_raw.get("up_band_fraction", 0.03)),
+            down_band_fraction=float(cs_raw.get("down_band_fraction", 0.004)),
+        ),
         min_score=int(d.get("min_score", 1000)),
+        score_format=d.get("score_format", "plain"),
+        label_tokens=list(d.get("label_tokens") or []),
         word_gap_fraction=float(d.get("word_gap_fraction", 0.015)),
         min_word_gap_px=int(d.get("min_word_gap_px", 8)),
+    )
+
+
+def _parse_elements(d: Optional[dict]) -> ElementsDef:
+    if not d:
+        return ElementsDef()
+    timestamp = d.get("timestamp")
+    return ElementsDef(
+        fixed_rows=[
+            FixedRowDef(
+                rank=int(fr.get("rank", 1)),
+                value_label=fr.get("value_label", ""),
+                skip_labels=list(fr.get("skip_labels") or []),
+                region=fr.get("region", "above_header"),
+            )
+            for fr in d.get("fixed_rows") or []
+        ],
+        timestamp=(
+            (_parse_normalized_region(timestamp.get("search_region")) or NormalizedRegion())
+            if timestamp is not None else None
+        ),
     )
 
 
@@ -324,6 +379,8 @@ def _parse_definition(raw: dict) -> ScreenDefinition:
         tabs=_parse_tabs(raw.get("tabs")),
         columns=_parse_columns(raw.get("columns", [])),
         row_clustering=_parse_row_clustering(raw.get("row_clustering")),
+        category=raw.get("category", ""),
+        elements=_parse_elements(raw.get("elements")),
     )
 
 
@@ -391,21 +448,53 @@ def get_definition(screen_id: str) -> Optional[ScreenDefinition]:
     return None
 
 
+def categories_of(defn: ScreenDefinition) -> list[str]:
+    """
+    The wire categories a definition produces (screen-definitions README,
+    Consumer Contract → Wire categories):
+
+    - with `tabs.groups`: one per combination of one item from each group,
+      joined with `_` in group declaration order (`siege_daily`);
+    - otherwise with `tabs`: each item's `category`, falling back to its `id`;
+    - with no tab bar: the top-level `category`.
+    """
+    if defn.tabs and defn.tabs.groups:
+        combos = [""]
+        for group in defn.tabs.groups:
+            items = [i.category or i.id for i in defn.tabs.items if i.group == group]
+            combos = [f"{c}_{item}" if c else item for c in combos for item in items]
+        return combos
+    if defn.tabs:
+        return [item.category or item.id for item in defn.tabs.items]
+    return [defn.category] if defn.category else []
+
+
+@lru_cache(maxsize=1)
+def _category_index() -> dict[str, ScreenDefinition]:
+    index: dict[str, ScreenDefinition] = {}
+    for defn in load_all():
+        for category in categories_of(defn):
+            index.setdefault(category, defn)
+    return index
+
+
+def all_categories() -> frozenset[str]:
+    """Every category the loaded definitions produce."""
+    return frozenset(_category_index())
+
+
 def get_definition_for_category(category: str) -> Optional[ScreenDefinition]:
     """
     Returns the screen definition that owns the given output category.
 
-    Searches each definition's tab items for a matching category field.
+    Resolved through the same derivation as all_categories(), so an Alliance
+    Contribution key (`siege_daily`) finds its definition too — before, only
+    tab items' own categories matched, and those keys fell back to defaults.
 
     Args:
-        category: Category string e.g. "power", "monday", "weekly".
+        category: Category string e.g. "power", "monday", "siege_daily".
 
     Returns:
         The owning ScreenDefinition, or None if not found.
     """
-    for defn in load_all():
-        if defn.tabs:
-            for item in defn.tabs.items:
-                if item.category == category:
-                    return defn
-    return None
+    return _category_index().get(category)

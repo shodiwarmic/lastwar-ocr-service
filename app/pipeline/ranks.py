@@ -118,7 +118,7 @@ def rank_from_name_token(
     return value if 1 <= value <= MAX_RANK else None
 
 
-def apply_checksum(rows: list[dict]) -> dict:
+def apply_checksum(rows: list[dict], pinned_row: bool = True) -> dict:
     """
     Infers unread ranks where their position is unambiguous, then computes the
     section's checksum.
@@ -131,7 +131,8 @@ def apply_checksum(rows: list[dict]) -> dict:
     ranks 1–7). A last row whose read rank is not the one its position calls
     for is taken to be that row: it keeps its rank, and is left out of the
     inference, the gaps, duplicates, order and score-order checks, and
-    reported as `pinned`.
+    reported as `pinned`. Screens without one (the mails) pass
+    pinned_row=False.
 
     Returns {"ranks": {...}, "order_violations": [...]}; "ranks" is None when
     no rank was read at all.
@@ -150,7 +151,7 @@ def apply_checksum(rows: list[dict]) -> dict:
 
         last = len(rows) - 1
         if (
-            len(rows) >= 3 and best >= 2
+            pinned_row and len(rows) >= 3 and best >= 2
             and rows[last]["rank"] is not None
             and rows[last]["rank"] != expected_start + last
         ):

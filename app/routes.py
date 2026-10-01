@@ -295,7 +295,9 @@ def process_batch():
                 image_height=section_height,
                 image_width=stitched_image.width,
                 report=report,
+                y_offset=region.y_start,
             )
+            note = report.pop("note", None) or (None if players else "no_players")
 
             result.add_entries(category, players)
             batch_results.setdefault(category, []).extend(players)
@@ -303,7 +305,7 @@ def process_batch():
                 region, batch_index, category=category, confidence=confidence,
                 method=classification_method(category, confidence, override=is_override),
                 players_found=len(players),
-                note=None if players else "no_players",
+                note=note,
                 report=report,
             ))
 
