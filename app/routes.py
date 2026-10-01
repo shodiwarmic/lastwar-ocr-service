@@ -5,7 +5,7 @@ HTTP route definitions for the Last War OCR microservice.
 
 Endpoints:
     POST /process-batch   — Main batch processing endpoint
-    GET  /health          — Cloud Run health check
+    GET  /health          — Liveness, release and capabilities
 
 Pipeline (POST /process-batch):
     1. Validate and load uploaded images.
@@ -22,8 +22,12 @@ Pipeline (POST /process-batch):
     7. Merge results and return JSON.
 
 Cache:
-    An in-memory dict maps JPEG-hash → per-category extraction results.
-    Per-instance, non-persistent.
+    An in-memory dict maps (JPEG-hash, category override, schema version) →
+    per-category extraction results. Per-instance, non-persistent.
+
+Contract:
+    Wire contract v1, whose canonical text is the screen-definitions README
+    (Consumer Contract → Wire contract v1).
 """
 
 from __future__ import annotations
@@ -33,6 +37,8 @@ import hashlib
 from flask import Blueprint, jsonify, request
 
 from app.models.schemas import (
+    DEFAULT_SCHEMA_VERSION,
+    SCHEMA_VERSIONS,
     BatchDiagnostic,
     BatchDiagnostics,
     BatchResult,
@@ -47,20 +53,24 @@ from app.pipeline.ocr_client import active_engine, extract_text_blocks, run_ocr
 from app.pipeline.stitcher import prepare_stitched_batches
 from app.utils.image_utils import pil_from_file_storage, pil_to_bytes
 from app.utils.logger import get_logger
+from app.version import SERVICE_COMMIT, SERVICE_VERSION
 
 logger = get_logger(__name__)
 
 bp = Blueprint("main", __name__)
 
-# In-memory result cache, keyed on the SHA-256 of the stitched-image bytes.
+# In-memory result cache, keyed on the SHA-256 of the stitched-image bytes
+# plus the category override and the requested schema version — the same
+# frames read under a second category must not replay the first.
 # Stores per-batch results AND the per-section diagnostics derived from the
 # image *content* (category, confidence, method, players_found, y_range, note).
 # Filenames are request-specific, not content-derived, so on a cache hit the
 # replayed sections' `image`/`batch_index`/`cache_hit` are overwritten with the
 # current request's values (see process_batch). Per-instance, non-persistent.
-#   {jpeg_hash: {"results": {category: [PlayerEntry, ...]},
-#                "sections": [SectionDiagnostic, ...]}}
-_result_cache: dict[str, dict] = {}
+#   {(jpeg_hash, category_override, schema_version):
+#       {"results": {category: [PlayerEntry, ...]},
+#        "sections": [SectionDiagnostic, ...]}}
+_result_cache: dict[tuple, dict] = {}
 
 MAX_IMAGES_PER_BATCH = 100
 
@@ -94,9 +104,27 @@ def _make_section(
 # Routes
 # ---------------------------------------------------------------------------
 
+def _refusal(status: int, code: str, message: str, **fields):
+    """A 4xx body: the human-readable `error` every v1 caller reads, plus a
+    machine-readable `code` and whatever the caller needs to recover."""
+    return jsonify({"error": message, "code": code, **fields}), status
+
+
 @bp.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok"}), 200
+    """
+    Liveness plus what this release can do: its version and commit, the
+    contract versions it answers in, and every category it reads. Callers
+    read it before relying on a capability. (Cloud Run's startup probe is a
+    TCP check, not this route.)
+    """
+    return jsonify({
+        "status": "ok",
+        "version": SERVICE_VERSION,
+        "commit": SERVICE_COMMIT,
+        "schema_versions": list(SCHEMA_VERSIONS),
+        "categories": sorted(VALID_CATEGORIES),
+    }), 200
 
 
 @bp.route("/process-batch", methods=["POST"])
@@ -116,7 +144,27 @@ def process_batch():
     # contribution tabs: mutual_assistance, siege, rare_soil_war, defeat).
     category_override: str | None = request.form.get("category", "").strip() or None
     if category_override is not None and category_override not in VALID_CATEGORIES:
-        return jsonify({"error": f"Unknown category '{category_override}'. Valid values: {sorted(VALID_CATEGORIES)}"}), 400
+        return _refusal(
+            400, "category_not_supported",
+            f"Unknown category '{category_override}'. Valid values: {sorted(VALID_CATEGORIES)}",
+            category=category_override,
+            supported_categories=sorted(VALID_CATEGORIES),
+        )
+
+    # The contract version the caller will parse. Absent → 1. Answer in that
+    # version or refuse; never in another one.
+    raw_version = request.form.get("schema_version", "").strip()
+    try:
+        schema_version = int(raw_version) if raw_version else DEFAULT_SCHEMA_VERSION
+    except ValueError:
+        schema_version = None
+    if schema_version not in SCHEMA_VERSIONS:
+        return _refusal(
+            400, "schema_not_supported",
+            f"Contract version {raw_version!r} is not supported; this service answers in "
+            f"{', '.join(str(v) for v in SCHEMA_VERSIONS)}.",
+            supported_versions=list(SCHEMA_VERSIONS),
+        )
 
     logger.info("Batch received", extra={"image_count": len(files), "category_override": category_override})
 
@@ -151,14 +199,15 @@ def process_batch():
     for batch_index, (stitched_image, regions) in enumerate(batches):
         img_bytes = pil_to_bytes(stitched_image, fmt="JPEG")
         img_hash  = hashlib.sha256(img_bytes).hexdigest()
+        cache_key = (img_hash, category_override, schema_version)
         source_images = [r.filename for r in regions]
 
-        if img_hash in _result_cache:
+        if cache_key in _result_cache:
             logger.info(
                 "Cache hit for stitched batch",
                 extra={"image_hash": img_hash[:12], "region_count": len(regions)},
             )
-            cached = _result_cache[img_hash]
+            cached = _result_cache[cache_key]
             for category, players in cached["results"].items():
                 result.add_entries(category, players)
             # Replay cached sections, but re-stamp the request-specific fields:
@@ -262,7 +311,7 @@ def process_batch():
                 },
             )
 
-        _result_cache[img_hash] = {"results": batch_results, "sections": batch_sections}
+        _result_cache[cache_key] = {"results": batch_results, "sections": batch_sections}
         section_diags.extend(batch_sections)
         batch_diags.append(BatchDiagnostic(
             batch_index=batch_index, stitched_size=stitched_image.size,
@@ -273,6 +322,8 @@ def process_batch():
     # 5. Assemble diagnostics + return the {results, diagnostics} envelope
     # ------------------------------------------------------------------ #
     diagnostics = BatchDiagnostics(
+        service_version=SERVICE_VERSION,
+        service_commit=SERVICE_COMMIT,
         engine=active_engine(),
         image_count=len(loaded),
         batch_count=len(batches),
@@ -284,6 +335,7 @@ def process_batch():
     if result.is_empty():
         logger.warning("Batch produced no results", extra={"image_count": len(loaded)})
         return jsonify({
+            "schema_version": schema_version,
             "results": {},
             "diagnostics": diagnostics,
             "warning": "No player data could be extracted from the provided images.",
@@ -298,7 +350,11 @@ def process_batch():
         },
     )
 
-    return jsonify({"results": results, "diagnostics": diagnostics}), 200
+    return jsonify({
+        "schema_version": schema_version,
+        "results": results,
+        "diagnostics": diagnostics,
+    }), 200
 
 
 # ---------------------------------------------------------------------------

@@ -29,6 +29,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# The release and commit, reported on /health and in every response's
+# diagnostics (app/version.py). docker-publish.yml passes both; a hand build
+# without them reports dev / unknown.
+ARG APP_VERSION=dev
+ARG APP_COMMIT=unknown
+ENV OCR_SERVICE_VERSION=$APP_VERSION \
+    OCR_SERVICE_COMMIT=$APP_COMMIT
+
 # PaddlePaddle needs a few system libs at runtime: OpenMP, libGL (used by
 # OpenCV which PaddleOCR pulls in), libglib (gtk image utils).
 RUN apt-get update && apt-get install -y --no-install-recommends \

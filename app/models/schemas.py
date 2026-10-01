@@ -19,6 +19,17 @@ from pydantic import BaseModel, Field, field_validator
 
 
 # ---------------------------------------------------------------------------
+# Wire contract
+# ---------------------------------------------------------------------------
+# Contract versions this service can answer in. The canonical text of each is
+# the screen-definitions README (Consumer Contract → Wire contract v1). The
+# caller names the one it will parse in the `schema_version` form field; an
+# absent field means 1, the version every caller spoke before it existed.
+SCHEMA_VERSIONS = (1,)
+DEFAULT_SCHEMA_VERSION = 1
+
+
+# ---------------------------------------------------------------------------
 # Classification confidence levels
 # ---------------------------------------------------------------------------
 # Canonical confidence values returned by classify_from_ocr_text(). Named here
@@ -325,6 +336,8 @@ class BatchDiagnostics(BaseModel):
     `schema_version` lets consumers treat unknown future fields as additive.
     """
     schema_version: int = 1
+    service_version: Optional[str] = None
+    service_commit: Optional[str] = None
     engine: str
     image_count: int
     batch_count: int

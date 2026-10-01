@@ -83,7 +83,8 @@ class TestHealthEndpoint:
     def test_health_returns_json(self, client):
         response = client.get("/health")
         data = response.get_json()
-        assert data == {"status": "ok"}
+        # v1 callers read only `status`; the rest is test_contract's business.
+        assert data["status"] == "ok"
 
 
 # ---------------------------------------------------------------------------
