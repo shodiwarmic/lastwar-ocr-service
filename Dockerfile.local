@@ -15,10 +15,9 @@
 #     ~/.paddlex/. Mount /home/appuser/.paddlex as a volume in
 #     docker-compose to avoid re-downloading on container restart.
 #   * Stylised header text (e.g. "STRENGTH RANKING") is unreliable, so the
-#     local pipeline expects callers to pass `?category=…` to /process-batch
-#     to skip auto-classification. See LOCAL_OCR_POC.md in
-#     lastwar-screenshots and the Mobile API section of
-#     lastwar-alliance-manager/CLAUDE.md.
+#     local pipeline expects callers to pass `category` to /process-batch
+#     to skip auto-classification. The calibration notes (LOCAL_OCR_POC.md)
+#     are in the private fixtures repository, beside the screenshots.
 
 FROM python:3.10-slim
 
@@ -28,6 +27,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     OCR_ENGINE=paddleocr
 
 WORKDIR /app
+
+# The release and commit, reported on /health and in every response's
+# diagnostics (app/version.py). docker-publish.yml passes both; a hand build
+# without them reports dev / unknown.
+ARG APP_VERSION=dev
+ARG APP_COMMIT=unknown
+ENV OCR_SERVICE_VERSION=$APP_VERSION \
+    OCR_SERVICE_COMMIT=$APP_COMMIT
 
 # PaddlePaddle needs a few system libs at runtime: OpenMP, libGL (used by
 # OpenCV which PaddleOCR pulls in), libglib (gtk image utils).

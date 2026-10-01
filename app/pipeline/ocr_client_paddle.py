@@ -53,7 +53,8 @@ def _get_pipeline():
         from paddleocr import PaddleOCR  # noqa: WPS433
         # `enable_mkldnn=False` works around a PaddlePaddle 3.x OneDNN bug
         # ("ConvertPirAttribute2RuntimeAttribute not support") that trips
-        # on common server CPUs. See LOCAL_OCR_POC.md in lastwar-screenshots.
+        # on common server CPUs. See LOCAL_OCR_POC.md in the private fixtures
+        # repository (ocr-service/screenshots/).
         lang = os.environ.get("PADDLEOCR_LANG", "en")
         _pipeline = PaddleOCR(
             lang=lang,

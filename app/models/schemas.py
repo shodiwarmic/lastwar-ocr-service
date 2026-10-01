@@ -17,6 +17,19 @@ from __future__ import annotations
 from typing import Optional
 from pydantic import BaseModel, Field, field_validator
 
+from app.pipeline.screen_definitions import all_categories, get_definition_for_category
+
+
+# ---------------------------------------------------------------------------
+# Wire contract
+# ---------------------------------------------------------------------------
+# Contract versions this service can answer in. The canonical text of each is
+# the screen-definitions README (Consumer Contract → Wire contract v1). The
+# caller names the one it will parse in the `schema_version` form field; an
+# absent field means 1, the version every caller spoke before it existed.
+SCHEMA_VERSIONS = (1,)
+DEFAULT_SCHEMA_VERSION = 1
+
 
 # ---------------------------------------------------------------------------
 # Classification confidence levels
@@ -63,10 +76,20 @@ class PlayerEntry(BaseModel):
                      The caller should pick the candidate whose player_name
                      matches a known member; fall back to candidates[0] otherwise.
                      Absent entirely when the row was unambiguous.
+        rank:        The row's rank as read beside it (or from digits merged
+                     into its name), or inferred. Absent when neither.
+        rank_inferred: True when `rank` was not read but inferred from the read
+                     ranks either side. Absent otherwise.
+        score_unread: True when the row's name and rank were read but its
+                     score cell was not; `score` is then 0 and means unknown.
+                     Only column_scoped screens (the mails) emit it.
     """
     player_name: str
     score: int
     candidates: Optional[list[ScoreCandidate]] = None
+    rank: Optional[int] = None
+    rank_inferred: Optional[bool] = None
+    score_unread: Optional[bool] = None
 
     @field_validator("player_name")
     @classmethod
@@ -77,9 +100,12 @@ class PlayerEntry(BaseModel):
 
     @field_validator("score")
     @classmethod
-    def score_must_be_positive(cls, v: int) -> int:
-        if v <= 0:
-            raise ValueError("score must be a positive integer")
+    def score_must_not_be_negative(cls, v: int) -> int:
+        # Zero is a real score: a Zombie Siege row can hold zero waves, and
+        # those are the rows that matter most. The ranking screens never
+        # emit one (their min_score is 1,000).
+        if v < 0:
+            raise ValueError("score must not be negative")
         return v
 
 
@@ -119,20 +145,10 @@ class ClassificationResult(BaseModel):
 # Batch result (returned to caller)
 # ---------------------------------------------------------------------------
 
-# All valid output category keys
-VALID_CATEGORIES = frozenset({
-    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday",
-    "weekly",           # Weekly rank total
-    "power",            # Strength ranking — Power tab
-    "kills",            # Strength ranking — Kills tab
-    "donation_daily",   # Strength ranking — Donation Daily sub-tab
-    "donation_weekly",  # Strength ranking — Donation Weekly sub-tab
-    # Season Contribution Ranking — 4 tabs × 3 time periods
-    "mutual_assistance_daily",   "mutual_assistance_weekly",   "mutual_assistance_season",
-    "siege_daily",               "siege_weekly",               "siege_season",
-    "rare_soil_war_daily",       "rare_soil_war_weekly",       "rare_soil_war_season",
-    "defeat_daily",              "defeat_weekly",              "defeat_season",
-})
+# All valid output category keys, derived from the screen definitions
+# (screen_definitions.categories_of): the twenty-three ranking categories and
+# one per post-event mail. A new screen's category needs no change here.
+VALID_CATEGORIES = all_categories()
 
 # Category groups by screen family — used to derive the diagnostics `method`
 # label from a (category, confidence) pair without changing the classifier's
@@ -195,6 +211,14 @@ def classification_method(
     return "unclassified"
 
 
+def category_label(category: str) -> str:
+    """Human-readable label: the table below, else the owning screen's name."""
+    if category in CATEGORY_LABELS:
+        return CATEGORY_LABELS[category]
+    defn = get_definition_for_category(category)
+    return defn.name if defn else category
+
+
 # Human-readable label for each category (used in logs and documentation)
 CATEGORY_LABELS = {
     "monday":           "Daily Rank — Monday",
@@ -232,7 +256,7 @@ class BatchResult:
 
     Usage:
         result = BatchResult()
-        result.add_entries("friday", [PlayerEntry(player_name="SirBucksALot", score=45635206)])
+        result.add_entries("friday", [PlayerEntry(player_name="SirCoinsALot", score=45635206)])
         response = result.to_response_dict()
     """
 
@@ -264,8 +288,8 @@ class BatchResult:
         Returns:
             Dict mapping category keys to lists of player dicts, e.g.:
             {
-                "friday": [{"player_name": "SirBucksALot", "score": 45635206}],
-                "power":  [{"player_name": "MOJO DUDE",    "score": 218478394}]
+                "friday": [{"player_name": "SirCoinsALot", "score": 45635206}],
+                "power":  [{"player_name": "JAZZ CAT",    "score": 218478394}]
             }
         """
         return {
@@ -305,6 +329,13 @@ class SectionDiagnostic(BaseModel):
     players_found: int
     cache_hit: bool = False
     note: Optional[str] = None
+    # The rank checksum (app/pipeline/ranks.py) and rows whose score exceeds
+    # the row above. Absent when no rank was read / nothing is out of order.
+    ranks: Optional[dict] = None
+    order_violations: Optional[list[dict]] = None
+    # A post-event mail's timestamp line, as YYYY-MM-DD HH:MM:SS in the
+    # capturing phone's local time.
+    mail_timestamp: Optional[str] = None
 
 
 class BatchDiagnostic(BaseModel):
@@ -325,6 +356,8 @@ class BatchDiagnostics(BaseModel):
     `schema_version` lets consumers treat unknown future fields as additive.
     """
     schema_version: int = 1
+    service_version: Optional[str] = None
+    service_commit: Optional[str] = None
     engine: str
     image_count: int
     batch_count: int

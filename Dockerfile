@@ -9,6 +9,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# The release and commit, reported on /health and in every response's
+# diagnostics (app/version.py). docker-publish.yml passes both; a hand build
+# without them reports dev / unknown.
+ARG APP_VERSION=dev
+ARG APP_COMMIT=unknown
+ENV OCR_SERVICE_VERSION=$APP_VERSION \
+    OCR_SERVICE_COMMIT=$APP_COMMIT
+
 # Install dependencies first (separate layer for better Docker cache reuse)
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

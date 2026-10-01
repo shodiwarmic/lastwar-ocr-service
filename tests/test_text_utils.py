@@ -27,30 +27,30 @@ from app.utils.text_utils import (
 class TestSplitNameScoreCrash:
     """
     Tests the function that detects and splits OCR tokens where a digit-ending
-    player name is rendered flush against the score, e.g. "Ruthless54323,045,000".
+    player name is rendered flush against the score, e.g. "Fearless54323,045,000".
     """
 
     # --- Real crash cases from the mutual assistance weekly screenshot ---
 
     def test_digit_ending_name_rank2(self):
-        result = split_name_score_crash("Ruthless54323,045,000")
-        assert result == ("Ruthless5432", "3,045,000")
+        result = split_name_score_crash("Fearless54323,045,000")
+        assert result == ("Fearless5432", "3,045,000")
 
     def test_digit_ending_name_rank4(self):
-        result = split_name_score_crash("CheeseKillers22,622,000")
-        assert result == ("CheeseKillers2", "2,622,000")
+        result = split_name_score_crash("BreadEaters22,622,000")
+        assert result == ("BreadEaters2", "2,622,000")
 
     def test_letter_ending_name(self):
-        result = split_name_score_crash("Splendiddragon2,552,780")
-        assert result == ("Splendiddragon", "2,552,780")
+        result = split_name_score_crash("Glitterwyvern2,552,780")
+        assert result == ("Glitterwyvern", "2,552,780")
 
     def test_digit_ending_name_short_score(self):
-        result = split_name_score_crash("Blindman032,291,620")
-        assert result == ("Blindman03", "2,291,620")
+        result = split_name_score_crash("Deafwolf032,291,620")
+        assert result == ("Deafwolf03", "2,291,620")
 
     def test_letter_ending_name_short(self):
-        result = split_name_score_crash("LailaFa2,483,820")
-        assert result == ("LailaFa", "2,483,820")
+        result = split_name_score_crash("MoiraKe2,483,820")
+        assert result == ("MoiraKe", "2,483,820")
 
     # --- Tokens that should NOT be split ---
 
@@ -58,11 +58,11 @@ class TestSplitNameScoreCrash:
         assert split_name_score_crash("3,045,000") is None
 
     def test_pure_name_returns_none(self):
-        assert split_name_score_crash("ShodiWarmic") is None
+        assert split_name_score_crash("KeldaVornic") is None
 
     def test_name_with_no_score_suffix_returns_none(self):
         # Ends in digits but no comma-grouped number
-        assert split_name_score_crash("Charlie9042") is None
+        assert split_name_score_crash("Victor9042") is None
 
     def test_score_without_commas_returns_none(self):
         # Bare integer — is_numeric_token handles this; no comma group to find
@@ -110,50 +110,50 @@ class TestAllCrashSplits:
     """
 
     def test_returns_all_valid_splits_for_ruthless(self):
-        splits = all_crash_splits("Ruthless54323,045,000")
+        splits = all_crash_splits("Fearless54323,045,000")
         assert len(splits) == 3
 
         names  = [s[0] for s in splits]
         scores = [parse_score(s[1]) for s in splits]
 
-        assert "Ruthless5432" in names
-        assert "Ruthless543"  in names
-        assert "Ruthless54"   in names
+        assert "Fearless5432" in names
+        assert "Fearless543"  in names
+        assert "Fearless54"   in names
 
     def test_ordered_ascending_by_score(self):
-        splits = all_crash_splits("Ruthless54323,045,000")
+        splits = all_crash_splits("Fearless54323,045,000")
         scores = [parse_score(s[1]) for s in splits]
         assert scores == sorted(scores)
 
     def test_heuristic_is_index_zero(self):
         """Index 0 must match the rightmost-split heuristic (smallest score)."""
-        heuristic = split_name_score_crash("Ruthless54323,045,000")
-        all_s = all_crash_splits("Ruthless54323,045,000")
+        heuristic = split_name_score_crash("Fearless54323,045,000")
+        all_s = all_crash_splits("Fearless54323,045,000")
         assert all_s[0] == heuristic
 
     def test_two_splits_cheese_killers(self):
-        splits = all_crash_splits("CheeseKillers22,622,000")
+        splits = all_crash_splits("BreadEaters22,622,000")
         assert len(splits) == 2
-        assert splits[0] == ("CheeseKillers2", "2,622,000")
-        assert splits[1] == ("CheeseKillers",  "22,622,000")
+        assert splits[0] == ("BreadEaters2", "2,622,000")
+        assert splits[1] == ("BreadEaters",  "22,622,000")
 
     def test_one_split_letter_ending_name(self):
-        splits = all_crash_splits("Splendiddragon2,552,780")
+        splits = all_crash_splits("Glitterwyvern2,552,780")
         assert len(splits) == 1
-        assert splits[0] == ("Splendiddragon", "2,552,780")
+        assert splits[0] == ("Glitterwyvern", "2,552,780")
 
     def test_pure_numeric_returns_empty(self):
         assert all_crash_splits("3,045,000") == []
 
     def test_plain_name_returns_empty(self):
-        assert all_crash_splits("ShodiWarmic") == []
+        assert all_crash_splits("KeldaVornic") == []
 
     def test_no_duplicates(self):
-        splits = all_crash_splits("Ruthless54323,045,000")
+        splits = all_crash_splits("Fearless54323,045,000")
         assert len(splits) == len(set(splits))
 
     def test_scores_match_split_name_score_crash(self):
         """Every entry in all_crash_splits should be parseable."""
-        for name_prefix, score_str in all_crash_splits("CheeseKillers22,622,000"):
+        for name_prefix, score_str in all_crash_splits("BreadEaters22,622,000"):
             assert parse_score(score_str) is not None
             assert name_prefix  # non-empty

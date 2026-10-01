@@ -23,7 +23,7 @@ from app.utils.window_detect import (
     crop_to_window,
 )
 
-SCREENSHOTS = Path.home() / "lastwar-screenshots"
+from tests.conftest import find_screenshot_dir, skip_missing_image
 
 
 def _solid(width: int, height: int, color: tuple[int, int, int]) -> Image.Image:
@@ -195,14 +195,12 @@ class TestCropToWindow:
 # Real-fixture smoke test — only runs if the screenshots are present
 # ---------------------------------------------------------------------------
 
-@pytest.mark.skipif(
-    not (SCREENSHOTS / "pixel_fold_inside_landscape").is_dir(),
-    reason="lastwar-screenshots/pixel_fold_inside_landscape not present",
-)
 class TestRealLandscapeFixtures:
 
     def test_landscape_sample_yields_portrait_window(self):
-        landscape_dir = SCREENSHOTS / "pixel_fold_inside_landscape"
+        landscape_dir = find_screenshot_dir("pixel_fold_inside_landscape")
+        if landscape_dir is None:
+            skip_missing_image("pixel_fold_inside_landscape/")
         sample = next(iter(landscape_dir.glob("*.png")), None)
         assert sample is not None, "no landscape PNGs found"
         img = Image.open(sample)

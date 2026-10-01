@@ -8,7 +8,8 @@ Designed for deployment on **Google Cloud Run** with **Google Cloud Vision** for
 
 ## Features
 
-- **Seven output categories:** Daily Rank (Mon–Sat), Weekly Rank, Strength Ranking (Power, Kills, Donation Daily, Donation Weekly)
+- **Twenty-six categories:** Daily Rank (Mon–Sat), Weekly Rank, Strength Ranking (Power, Kills, Donation Daily, Donation Weekly), the twelve Alliance Contribution views, and the three post-event mails (Alliance Exercise, Zombie Siege, Desert Storm)
+- **Ranks as a checksum:** each row carries its rank, and each section reports gaps and duplicates so a dropped or doubled row is visible
 - **YAML-driven screen definitions:** classification thresholds, tab positions, and row-clustering parameters live in `app/screen_definitions/` — no code changes needed to tune them
 - **Stitch-first pipeline:** groups screenshots by resolution, stitches into a single tall image, runs one Vision API call per group, then splits the result back into per-image sections
 - **Two-pass classification:** fast colour-sampling pre-filter (Pass 1) + OCR-assisted fallback (Pass 2) for ambiguous images
@@ -56,37 +57,42 @@ lastwar-ocr-service/
 ├── app/
 │   ├── __init__.py              Flask app factory
 │   ├── routes.py                /process-batch and /health endpoints
+│   ├── version.py               Release and commit, baked in at build time
 │   ├── screen_definitions/      Git submodule — YAML screen definitions
 │   │   ├── catalog.yaml         Ordered list of screens
 │   │   ├── meta-schema.json     JSON Schema for definition files
-│   │   ├── README.md            Schema reference and authoring guide
-│   │   └── screens/
-│   │       ├── daily_ranking.yaml
-│   │       ├── weekly_ranking.yaml
-│   │       └── strength_ranking.yaml
+│   │   ├── README.md            Schema reference, Consumer Contract, wire contract v1
+│   │   └── screens/             Five ranking screens and three mails
 │   ├── pipeline/
-│   │   ├── screen_definitions.py  Loads and caches YAML definitions
-│   │   ├── classifier.py          Two-pass screenshot classification
-│   │   ├── stitcher.py            Resolution grouping and vertical stitching
+│   │   ├── screen_definitions.py  Loads and caches YAML definitions; derives categories
+│   │   ├── classifier.py          Two-pass screenshot classification (ranking screens)
+│   │   ├── stitcher.py            Window crop, resolution grouping, vertical stitching
 │   │   ├── ocr_client.py          Google Cloud Vision wrapper
-│   │   └── extractor.py           OCR text → structured player data
+│   │   ├── ocr_client_paddle.py   PaddleOCR backend (the local image)
+│   │   ├── extractor.py           OCR text → structured player data
+│   │   ├── column_scoped.py       The mails' row extraction
+│   │   └── ranks.py               Rank reading and the rank checksum
 │   ├── models/
-│   │   └── schemas.py             Pydantic models: PlayerEntry, BatchResult
+│   │   └── schemas.py             Pydantic models, contract versions, categories
 │   └── utils/
-│       ├── logger.py              Structured JSON logger for Cloud Run
+│       ├── logger.py              Structured JSON logger (LOG_LEVEL, default INFO)
 │       ├── image_utils.py         PIL helpers
+│       ├── window_detect.py       Game-window detection
 │       └── text_utils.py          Regex patterns and string cleaning
 ├── tests/
-│   ├── conftest.py                Shared fixtures and synthetic block builders
+│   ├── conftest.py                Fixture loading (LASTWAR_FIXTURES) and block builders
 │   ├── fixtures/
-│   │   └── ocr_responses/         Captured Vision API JSON fixtures (git-ignored)
-│   ├── test_classifier.py
-│   ├── test_extractor.py
-│   └── test_routes.py
+│   │   ├── ocr_responses/         Scrubbed public recordings (the full set is private)
+│   │   ├── smoke/                 The release smoke test's synthetic frame
+│   │   └── extraction_snapshot.json
+│   └── test_*.py
 ├── tools/
-│   └── capture_ocr_fixture.py    CLI: capture real OCR responses as test fixtures
-├── Dockerfile
-├── requirements.txt
+│   ├── capture_ocr_fixture.py    Record real OCR responses
+│   └── scrub_fixture.py          Make a recording safe to publish
+├── docs/                          GCP_PERMISSIONS.md, RELEASING.md
+├── deploy/                        Artifact Registry cleanup policy
+├── Dockerfile, Dockerfile.local   Cloud (Vision) and local (PaddleOCR) images
+├── CHANGELOG.md
 └── main.py                        Gunicorn entrypoint
 ```
 
@@ -98,20 +104,26 @@ lastwar-ocr-service/
 
 Accepts a batch of screenshots and returns extracted player data grouped by category.
 
+The request and response are **wire contract v1**, whose canonical text is the
+screen-definitions README (Consumer Contract → Wire contract v1).
+
 **Request**
 ```
-Content-Type: multipart/form-data
-Field:        images  (1–100 image files)
+Content-Type:   multipart/form-data
+images          1–100 image files
+category        optional — skip classification and read every frame as this category
+schema_version  optional — the contract version the caller will parse; absent means 1
 ```
 
-**Response 200** — a `{results, diagnostics}` envelope:
+**Response 200** — a `{schema_version, results, diagnostics}` envelope:
 ```json
 {
+  "schema_version": 1,
   "results": {
-    "monday":           [{"player_name": "Charlie9042",      "score": 38686463}],
-    "friday":           [{"player_name": "SirBucksALot",     "score": 45635206}],
-    "power":            [{"player_name": "MOJO DUDE",        "score": 218478394}],
-    "donation_weekly":  [{"player_name": "CaptTrickster727", "score": 28300}]
+    "monday":           [{"player_name": "Victor9042",      "score": 38686463}],
+    "friday":           [{"player_name": "SirCoinsALot",     "score": 45635206}],
+    "power":            [{"player_name": "JAZZ CAT",        "score": 218478394}],
+    "donation_weekly":  [{"player_name": "CaptJuggler727", "score": 28300}]
   },
   "diagnostics": {
     "schema_version": 1,
@@ -143,15 +155,28 @@ validation failures return `4xx {"error": "..."}`.
 | `kills` | Strength Ranking — Kills tab |
 | `donation_daily` | Strength Ranking — Donation tab, Daily sub-tab |
 | `donation_weekly` | Strength Ranking — Donation tab, Weekly sub-tab |
+| `mutual_assistance_*`, `siege_*`, `rare_soil_war_*`, `defeat_*` (`_daily` / `_weekly` / `_season`) | Alliance Contribution |
+| `alliance_exercise` | "[Alliance Exercise] Alliance Reward" mail — damage, MVP card as rank 1 |
+| `zombie_siege` | "Zombie Siege Report (Alliance)" mail — waves |
+| `desert_storm` | "[Desert Storm] Battle Results!" mail — individual points |
 
-**Response 400** — missing or invalid input (no images, too many images, non-image files)  
+The mails are read only when the request names the category: the classifier never picks
+one. Their rows carry `rank` (and `rank_inferred` / `score_unread` where they apply), and
+each section's diagnostics carry the `mail_timestamp` line in the capturing phone's local
+time, and `note: "no_rows_below_header"` for a collapsed list.
+
+**Response 400** — missing or invalid input (no images, too many images, non-image files), an
+unknown `category` (`code: "category_not_supported"`), or an unsupported `schema_version`
+(`code: "schema_not_supported"`)  
 **Response 500** — internal processing error
 
 ---
 
 ### `GET /health`
 
-Cloud Run health check. Returns `{"status": "ok"}` with HTTP 200.
+Liveness and capabilities: `{"status": "ok", "version": "v1.0.0", "commit": "<sha>",
+"schema_versions": [1], "categories": [...]}`. A caller checks it before relying on a category
+or a contract version. (Cloud Run's startup probe is a TCP check, not this route.)
 
 ---
 
@@ -207,7 +232,14 @@ python tools/capture_ocr_fixture.py /path/to/screenshot.png
 python tools/capture_ocr_fixture.py /path/to/screenshots/ --dry-run
 ```
 
-Fixtures are saved to `tests/fixtures/ocr_responses/`. The filename prefix is used to infer the expected output category — include the category in the screenshot filename before capturing:
+Recordings of real screens carry real player names, so they are **not committed here**. They
+live in the private repository `shodiwarmic/lastwar-test-fixtures` (`ocr-service/ocr_responses/`,
+with the source screenshots under `ocr-service/screenshots/`); capture into a clone of it with
+`--output`. This repository keeps a small public set, one recording per screen family, whose
+names were replaced by `tools/scrub_fixture.py` (`*-scrubbed.json`; review a scrubbed file by
+eye before committing it, and add it with `git add -f`).
+
+The tool writes `tests/fixtures/ocr_responses/` by default. The filename prefix is used to infer the expected output category — include the category in the screenshot filename before capturing:
 
 | Filename includes | Expected category |
 |---|---|
@@ -218,15 +250,24 @@ Fixtures are saved to `tests/fixtures/ocr_responses/`. The filename prefix is us
 | `Donation_Daily` | `donation_daily` |
 | `Donation_Weekly` | `donation_weekly` |
 
-The `.gitignore` excludes fixture files by default — remove that exclusion if you want them committed.
+The `.gitignore` excludes recordings so a real one is never committed by accident.
 
 ---
 
 ## Running Tests
 
+Tests that need a recording or a source screenshot skip when it is absent, with the reason
+`source image missing` for images. Most classification needs the screenshot (the active tab is
+told apart by colour), so without `LASTWAR_FIXTURES` those tests skip. CI runs with the private
+set, and on `main` and on tags sets `REQUIRE_FIXTURE_IMAGES=1`, which turns every missing-image
+skip into a failure.
+
 ```bash
-# Run all tests (fixture-dependent tests auto-skip if fixtures not captured yet)
+# Run all tests against the public, scrubbed recordings
 pytest
+
+# …and against the full private set and its screenshots, when you have access
+LASTWAR_FIXTURES=/path/to/lastwar-test-fixtures pytest
 
 # Run with verbose output
 pytest -v
@@ -242,43 +283,70 @@ pytest -k "RealFixture"
 
 ## Deployment to Cloud Run
 
-### 1. Enable required APIs
+**The service is never public.** Deploy it with `--no-allow-unauthenticated` and grant
+`roles/run.invoker` to the app's service account alone: every request spends Vision units
+billed to you, and `/health` names the exact release and commit it runs. The identities,
+their grants and the full one-time setup are in [`docs/GCP_PERMISSIONS.md`](docs/GCP_PERMISSIONS.md).
+
+### Self-hosting the cloud image
+
+Run a **released** image (`ghcr.io/shodiwarmic/lastwar-ocr-service:vX.Y.Z`; see
+[`docs/RELEASING.md`](docs/RELEASING.md) for what each tag means). Cloud Run cannot pull from
+GHCR directly, so put the image in an Artifact Registry repository in your service's region
+(pulls within a region are free). Either let a **remote repository** proxy GHCR:
+
 ```bash
-gcloud services enable run.googleapis.com vision.googleapis.com cloudbuild.googleapis.com
+gcloud artifacts repositories create ghcr-proxy --location us-east1 \
+  --repository-format docker --mode remote-repository --remote-docker-repo https://ghcr.io
+# image: us-east1-docker.pkg.dev/$PROJECT/ghcr-proxy/shodiwarmic/lastwar-ocr-service:vX.Y.Z
 ```
 
-### 2. Build and deploy
+or copy the release into a standard repository:
+
 ```bash
-export PROJECT_ID=your-gcp-project-id
-export REGION=us-central1
-export SERVICE_NAME=lastwar-ocr-service
-
-gcloud builds submit --tag gcr.io/$PROJECT_ID/$SERVICE_NAME
-
-gcloud run deploy $SERVICE_NAME \
-  --image gcr.io/$PROJECT_ID/$SERVICE_NAME \
-  --platform managed \
-  --region $REGION \
-  --allow-unauthenticated \
-  --memory 512Mi \
-  --timeout 120
+docker pull ghcr.io/shodiwarmic/lastwar-ocr-service:vX.Y.Z
+docker tag  ghcr.io/shodiwarmic/lastwar-ocr-service:vX.Y.Z \
+            us-east1-docker.pkg.dev/$PROJECT/lastwar-ocr/lastwar-ocr-service:vX.Y.Z
+docker push us-east1-docker.pkg.dev/$PROJECT/lastwar-ocr/lastwar-ocr-service:vX.Y.Z
 ```
 
-### 3. Grant Vision API access
-```bash
-SA_EMAIL=$(gcloud run services describe $SERVICE_NAME --region $REGION \
-  --format="value(spec.template.spec.serviceAccountName)")
+Then deploy it, as a dedicated runtime account that can call Vision and nothing else:
 
-gcloud projects add-iam-policy-binding $PROJECT_ID \
-  --member="serviceAccount:$SA_EMAIL" \
-  --role="roles/cloudvision.user"
+```bash
+export PROJECT=your-gcp-project-id REGION=us-east1
+gcloud run deploy lastwar-ocr-service --region $REGION \
+  --image <the image above> \
+  --service-account lastwar-ocr-runtime@$PROJECT.iam.gserviceaccount.com \
+  --no-allow-unauthenticated \
+  --concurrency 1 --max-instances 3 --memory 1Gi --cpu 1 --timeout 120
+gcloud run services add-iam-policy-binding lastwar-ocr-service --region $REGION \
+  --member serviceAccount:<the app's account> --role roles/run.invoker
 ```
 
-### 4. Set a billing budget alert
+`--concurrency 1`: gunicorn runs one sync worker, so a second request on an instance only
+waits, against the 120 s timeout. `--max-instances 3` bounds both parallelism and spend.
+
+**Keep a few versions, not all.** A cleanup policy on your repository stops old images piling
+up. This project keeps the three most recent ([`deploy/artifact-registry-cleanup.json`](deploy/artifact-registry-cleanup.json)):
+
 ```bash
-# Via Cloud Console: Billing → Budgets & alerts → Create budget
-# Recommended: Alert at $1 spend
+gcloud artifacts repositories set-cleanup-policies lastwar-ocr --location $REGION \
+  --policy deploy/artifact-registry-cleanup.json --no-dry-run
 ```
+
+Three is our default, not a requirement: a deleted image breaks rolling back to the revision
+that used it, so keep as many as you might roll back across. GHCR keeps every release.
+
+**Set a billing budget alert — required.** Vision, Translation and the archive bucket all bill
+the same account; [`docs/GCP_PERMISSIONS.md`](docs/GCP_PERMISSIONS.md#billing-a-budget-alert-is-required)
+has the steps.
+
+### This project's production
+
+Production is deployed by the release workflow, never by hand: a `vX.Y.Z` tag publishes the
+image to GHCR and to a private Artifact Registry repository with the same digest, deploys it
+as a no-traffic revision, smoke-tests it, and then moves traffic. See
+[`docs/RELEASING.md`](docs/RELEASING.md).
 
 ---
 
@@ -314,7 +382,7 @@ Edit the relevant YAML file in `app/screen_definitions/screens/` and increment i
 3. Capture an OCR fixture with `tools/capture_ocr_fixture.py` and name it to include the new category keyword
 4. Run `pytest` — the new fixture is auto-discovered by all three test files
 
-No Python code changes are needed for screens that fit the existing classifier strategies (`color_fraction` / `brightest` active-tab detection, `score_anchored` row clustering).
+Tuning needs no Python change, and neither does a screen that reuses an existing extraction strategy (`score_anchored`, `column_scoped`) **when the caller sends its category**. Auto-detection is different: the classifier is a fixed cascade over the five ranking screen families, not a loop over the catalog, so a screen the service should recognise unprompted needs a classifier branch. The post-event mails are override-only for that reason.
 
 ### Adding a new alliance display name to strip
 Add it to `_ALLIANCE_NAME_SUFFIXES` in [`app/utils/text_utils.py`](app/utils/text_utils.py).

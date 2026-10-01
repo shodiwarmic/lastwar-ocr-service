@@ -28,7 +28,7 @@ import pytest
 from PIL import Image
 from werkzeug.datastructures import FileStorage
 
-from tests.conftest import FIXTURE_DIR, load_fixture
+from tests.conftest import discover_fixtures, find_source_image, load_fixture, needs_colour, skip_missing_image
 
 
 # ---------------------------------------------------------------------------
@@ -83,7 +83,8 @@ class TestHealthEndpoint:
     def test_health_returns_json(self, client):
         response = client.get("/health")
         data = response.get_json()
-        assert data == {"status": "ok"}
+        # v1 callers read only `status`; the rest is test_contract's business.
+        assert data["status"] == "ok"
 
 
 # ---------------------------------------------------------------------------
@@ -198,7 +199,7 @@ class TestProcessBatchMocked:
         mock_ocr.return_value = (MagicMock(), "hash_abc")
         mock_text_blocks.return_value = [{"text": "x", "bbox": {}, "avg_x": 100.0, "avg_y": 1200.0}]
         mock_extract.return_value = [
-            PlayerEntry(player_name="SirBucksALot", score=45_635_206)
+            PlayerEntry(player_name="SirCoinsALot", score=45_635_206)
         ]
 
         response = client.post(
@@ -210,7 +211,7 @@ class TestProcessBatchMocked:
         assert response.status_code == 200
         data = response.get_json()["results"]
         assert "friday" in data
-        assert data["friday"][0]["player_name"] == "SirBucksALot"
+        assert data["friday"][0]["player_name"] == "SirCoinsALot"
         assert data["friday"][0]["score"] == 45_635_206
 
     @patch("app.routes.classify_from_ocr_text")
@@ -259,7 +260,7 @@ class TestProcessBatchMocked:
         mock_ocr.return_value = (MagicMock(), "hash_override")
         mock_text_blocks.return_value = [{"text": "x", "bbox": {}, "avg_x": 100.0, "avg_y": 1200.0}]
         mock_extract.return_value = [
-            PlayerEntry(player_name="DocHollagoon", score=21_000)
+            PlayerEntry(player_name="DocMarrowby", score=21_000)
         ]
 
         with _patch("app.routes.classify_from_ocr_text") as mock_classify:
@@ -273,7 +274,7 @@ class TestProcessBatchMocked:
         assert response.status_code == 200
         data = response.get_json()["results"]
         assert "siege_daily" in data
-        assert data["siege_daily"][0]["player_name"] == "DocHollagoon"
+        assert data["siege_daily"][0]["player_name"] == "DocMarrowby"
 
     @patch("app.routes.run_ocr")
     @patch("app.routes.extract_text_blocks")
@@ -290,7 +291,7 @@ class TestProcessBatchMocked:
 
         mock_ocr.return_value = (MagicMock(), "hash_key")
         mock_text_blocks.return_value = [{"text": "x", "bbox": {}, "avg_x": 100.0, "avg_y": 1200.0}]
-        mock_extract.return_value = [PlayerEntry(player_name="ShodiWarmic", score=4_500)]
+        mock_extract.return_value = [PlayerEntry(player_name="KeldaVornic", score=4_500)]
 
         for category in ("mutual_assistance_daily", "rare_soil_war_season", "defeat_weekly"):
             from app.routes import _result_cache
@@ -321,12 +322,12 @@ class TestProcessBatchMocked:
         mock_text_blocks.return_value = [{"text": "x", "bbox": {}, "avg_x": 100.0, "avg_y": 1200.0}]
         mock_extract.return_value = [
             PlayerEntry(
-                player_name="Ruthless5432",
+                player_name="Fearless5432",
                 score=3_045_000,
                 candidates=[
-                    ScoreCandidate(player_name="Ruthless5432", score=3_045_000),
-                    ScoreCandidate(player_name="Ruthless543",  score=23_045_000),
-                    ScoreCandidate(player_name="Ruthless54",   score=323_045_000),
+                    ScoreCandidate(player_name="Fearless5432", score=3_045_000),
+                    ScoreCandidate(player_name="Fearless543",  score=23_045_000),
+                    ScoreCandidate(player_name="Fearless54",   score=323_045_000),
                 ],
             )
         ]
@@ -341,10 +342,10 @@ class TestProcessBatchMocked:
         assert response.status_code == 200
         data = response.get_json()["results"]
         entry = data["mutual_assistance_weekly"][0]
-        assert entry["player_name"] == "Ruthless5432"
+        assert entry["player_name"] == "Fearless5432"
         assert "candidates" in entry
         assert len(entry["candidates"]) == 3
-        assert entry["candidates"][0] == {"player_name": "Ruthless5432", "score": 3_045_000}
+        assert entry["candidates"][0] == {"player_name": "Fearless5432", "score": 3_045_000}
 
     @patch("app.routes.run_ocr")
     @patch("app.routes.extract_text_blocks")
@@ -361,7 +362,7 @@ class TestProcessBatchMocked:
 
         mock_ocr.return_value = (MagicMock(), "hash_clean")
         mock_text_blocks.return_value = [{"text": "x", "bbox": {}, "avg_x": 100.0, "avg_y": 1200.0}]
-        mock_extract.return_value = [PlayerEntry(player_name="Sheffie", score=3_779_860)]
+        mock_extract.return_value = [PlayerEntry(player_name="Pollie", score=3_779_860)]
 
         with patch("app.routes.classify_from_ocr_text", return_value=("mutual_assistance_weekly", 1.0)):
             response = client.post(
@@ -396,10 +397,10 @@ class TestProcessBatchMocked:
                 return ("friday", 0.95)
             return ("power", 0.92)
 
-        def extract_side_effect(blocks, screen_type, image_height=2400, image_width=1080):
+        def extract_side_effect(blocks, screen_type, image_height=2400, image_width=1080, **_):
             if screen_type == "friday":
-                return [PlayerEntry(player_name="SirBucksALot", score=45_635_206)]
-            return [PlayerEntry(player_name="MOJO DUDE", score=218_478_394)]
+                return [PlayerEntry(player_name="SirCoinsALot", score=45_635_206)]
+            return [PlayerEntry(player_name="JAZZ CAT", score=218_478_394)]
 
         mock_classify.side_effect = classify_side_effect
         mock_ocr.return_value = (MagicMock(), "hash_multi")
@@ -452,7 +453,7 @@ class TestProcessBatchDiagnostics:
         self, mock_extract, mock_blocks, mock_ocr, mock_classify, client
     ):
         from app.models.schemas import PlayerEntry
-        mock_extract.return_value = [PlayerEntry(player_name="Repsalix", score=3_870_000)]
+        mock_extract.return_value = [PlayerEntry(player_name="Tembrolix", score=3_870_000)]
 
         resp = client.post(
             "/process-batch",
@@ -491,7 +492,7 @@ class TestProcessBatchDiagnostics:
         self, mock_extract, mock_blocks, mock_ocr, client
     ):
         from app.models.schemas import PlayerEntry
-        mock_extract.return_value = [PlayerEntry(player_name="DocHollagoon", score=21_000)]
+        mock_extract.return_value = [PlayerEntry(player_name="DocMarrowby", score=21_000)]
 
         resp = client.post(
             "/process-batch",
@@ -512,7 +513,7 @@ class TestProcessBatchDiagnostics:
     ):
         """Local sidecar path: engine=paddleocr, classification bypassed via override."""
         from app.models.schemas import PlayerEntry
-        mock_extract.return_value = [PlayerEntry(player_name="BlackIce2", score=14_800)]
+        mock_extract.return_value = [PlayerEntry(player_name="GreyFox2", score=14_800)]
 
         resp = client.post(
             "/process-batch",
@@ -533,7 +534,7 @@ class TestProcessBatchDiagnostics:
         """Same image bytes re-uploaded under a different filename: the cache hit
         must re-stamp the section `image` to the current request's filename."""
         from app.models.schemas import PlayerEntry
-        mock_extract.return_value = [PlayerEntry(player_name="Repsalix", score=3_870_000)]
+        mock_extract.return_value = [PlayerEntry(player_name="Tembrolix", score=3_870_000)]
 
         first = client.post(
             "/process-batch", content_type="multipart/form-data",
@@ -549,7 +550,7 @@ class TestProcessBatchDiagnostics:
         sec = second.get_json()["diagnostics"]["sections"][0]
         assert sec["cache_hit"] is True
         assert sec["image"] == "second.png"   # re-stamped, not the cached "first.png"
-        assert second.get_json()["results"]["thursday"][0]["player_name"] == "Repsalix"
+        assert second.get_json()["results"]["thursday"][0]["player_name"] == "Tembrolix"
 
     @patch("app.routes.classify_from_ocr_text", return_value=("thursday", 0.75))
     @patch("app.routes.run_ocr", return_value=(MagicMock(), "h_np"))
@@ -631,8 +632,7 @@ def _infer_category(fixture_name: str):
 
 
 def _discovered_fixtures():
-    stems = sorted(p.stem for p in FIXTURE_DIR.glob("*.json"))
-    return stems if stems else ["__no_fixtures__"]
+    return discover_fixtures()
 
 
 class TestProcessBatchRealFixtures:
@@ -661,11 +661,13 @@ class TestProcessBatchRealFixtures:
         mock_ann.text = "fixture"
         mock_ann.pages = []
 
-        # Use the real screenshot if available so colour-based classification
-        # works correctly. Fall back to a synthetic PNG if not found — in
-        # that case the text-scoring fallback inside classify_from_ocr_text
-        # takes over.
-        image_file = _real_image_or_synthetic(fixture_data.get("source_file", ""), fixture_name)
+        # Tab detection samples the screenshot's colours on most screens, so
+        # those need the real image and skip without it. The rest classify
+        # from text alone and run on a synthetic PNG when it is absent.
+        image_file = _real_image(
+            fixture_data.get("source_file", ""), fixture_name,
+            required=needs_colour(expected_category),
+        )
 
         with patch("app.routes.run_ocr", return_value=(mock_ann, fixture_data["image_hash"])):
             with patch("app.routes.extract_text_blocks", return_value=text_blocks):
@@ -684,41 +686,20 @@ class TestProcessBatchRealFixtures:
         assert len(data[expected_category]) > 0
 
 
-def _real_image_or_synthetic(source_file: str, fixture_name: str) -> FileStorage:
+def _real_image(source_file: str, fixture_name: str, *, required: bool) -> FileStorage:
     """
-    Returns a FileStorage wrapping the real screenshot if it can be found,
-    otherwise returns a synthetic PNG. The real image is needed so that
-    colour-based day tab classification works correctly in route tests.
+    Returns a FileStorage wrapping the real screenshot. When it is absent:
+    skips the test if `required`, else returns a synthetic PNG. The original
+    bytes go through the real pipeline (the stitcher crops letterboxed
+    frames), so no pre-cropping here.
     """
-    from pathlib import Path
-
-    search_dirs = [
-        Path("tests/fixtures/screenshots"),
-        Path.home() / "lastwar-screenshots",
-        Path.home() / "Pictures",
-        Path.home() / "Downloads",
-    ]
-
-    for directory in search_dirs:
-        if not directory.is_dir():
-            continue
-        for name in [source_file, f"{fixture_name}.png"]:
-            if not name:
-                continue
-            # Walk subdirectories — lastwar-screenshots is now organised by
-            # device/configuration (pixel_10_pro_xl/, pixel_fold_*/) rather
-            # than a flat layout.
-            candidates = [directory / name, *directory.rglob(name)]
-            for candidate in candidates:
-                if candidate.is_file():
-                    # Route tests pass the original bytes through the real
-                    # pipeline (stitcher crops letterboxed frames). No need
-                    # to pre-crop here — the stitcher will.
-                    return FileStorage(
-                        stream=io.BytesIO(candidate.read_bytes()),
-                        filename=name,
-                        content_type="image/png",
-                    )
-
-    # Real screenshot not found — fall back to synthetic
-    return png_file_storage(f"{fixture_name}.png")
+    path = find_source_image(source_file, f"{fixture_name}.png")
+    if path is None:
+        if required:
+            skip_missing_image(source_file or fixture_name)
+        return png_file_storage(f"{fixture_name}.png")
+    return FileStorage(
+        stream=io.BytesIO(path.read_bytes()),
+        filename=path.name,
+        content_type="image/png",
+    )

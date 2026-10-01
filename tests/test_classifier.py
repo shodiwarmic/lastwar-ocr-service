@@ -26,7 +26,15 @@ from app.pipeline.classifier import (
     _ocr_detect_weekly,
     _ocr_detect_active_day_by_text as _ocr_detect_active_day,
 )
-from tests.conftest import FIXTURE_DIR, get_text_blocks, load_fixture, make_block
+from tests.conftest import (
+    discover_fixtures,
+    find_source_image,
+    get_text_blocks,
+    load_fixture,
+    make_block,
+    needs_colour,
+    skip_missing_image,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -241,9 +249,7 @@ def _infer_category(fixture_name: str):
 
 
 def _discovered_fixtures():
-    """Return list of fixture stem names found on disk, or a placeholder if none."""
-    stems = sorted(p.stem for p in FIXTURE_DIR.glob("*.json"))
-    return stems if stems else ["__no_fixtures__"]
+    return discover_fixtures()
 
 
 class TestRealFixtures:
@@ -272,22 +278,13 @@ class TestRealFixtures:
         fixture_data = load_fixture(fixture_name)
         blocks = fixture_data["text_blocks"]
 
-        # Load the original screenshot for colour-based day detection if available
+        # Which tab is active is a colour signal on most screens (the day
+        # pill's saturation, the Strength and Alliance Contribution tab
+        # fills), so a recording is verified against its screenshot or not
+        # at all — never against a text guess.
         image = _try_load_source_image(fixture_data.get("source_file", ""))
-
-        # Which day tab is active is a colour signal (the active tab is a
-        # desaturated white pill), not a text one — so a day fixture cannot be
-        # verified without its screenshot. Skip rather than fall back to a
-        # text heuristic, which can only guess (see the de-biased fallback in
-        # classifier._ocr_detect_active_day_by_text).
-        _DAY_CATEGORIES = {
-            "monday", "tuesday", "wednesday", "thursday", "friday", "saturday",
-        }
-        if expected in _DAY_CATEGORIES and image is None:
-            pytest.skip(
-                f"Day detection needs the source screenshot (colour signal); "
-                f"image for '{fixture_name}' not available."
-            )
+        if image is None:
+            skip_missing_image(fixture_data.get("source_file", "") or fixture_name)
 
         category, confidence = classify_from_ocr_text(
             blocks, image=image, filename=f"{fixture_name}.png"
@@ -324,11 +321,9 @@ class TestDailyRankMisclassificationRegression:
     def _load(self, skip_if_no_fixture):
         skip_if_no_fixture(self.FIXTURE)
         data = load_fixture(self.FIXTURE)
-        image_path = (
-            Path(__file__).parent / "fixtures" / "screenshots" / data["source_file"]
-        )
-        if not image_path.is_file():
-            pytest.skip(f"Source image not committed: {image_path}")
+        image_path = find_source_image(data["source_file"])
+        if image_path is None:
+            skip_missing_image(data["source_file"])
         from app.utils.image_utils import pil_from_bytes
         return data["text_blocks"], pil_from_bytes(image_path.read_bytes())
 
@@ -353,35 +348,44 @@ class TestDailyRankMisclassificationRegression:
 
 def _try_load_source_image(source_file: str):
     """
-    Attempts to load the original screenshot for colour-based classification.
-    Returns None if not found — tests degrade gracefully to text-only mode.
+    Loads the original screenshot for colour-based classification, cropped
+    to its game window as the production stitcher would. None if absent.
     """
     if not source_file:
         return None
 
+    from app.utils.image_utils import pil_from_bytes
+    from app.utils.window_detect import crop_to_window, detect_window_by_black_borders
+
+    candidate = find_source_image(source_file)
+    if candidate is None:
+        return None
+    try:
+        img = pil_from_bytes(candidate.read_bytes())
+    except Exception:
+        return None
+    if img is None:
+        return None
+    # Mirror the production stitcher's pre-processing step: if the source
+    # image is letterboxed (e.g. Pixel Fold inside-landscape split-screen
+    # capture), crop to the detected game window so that bbox coordinates
+    # from re-captured fixtures line up with the image the classifier
+    # samples colours from.
+    rect = detect_window_by_black_borders(img)
+    if rect is not None:
+        img = crop_to_window(img, rect)
+    return img
+
     from pathlib import Path
     from app.utils.image_utils import pil_from_bytes
 
-    search_dirs = [
-        Path("tests/fixtures/screenshots"),
-        Path.home() / "lastwar-screenshots",
-        Path.home() / "Pictures",
-        Path.home() / "Downloads",
-    ]
-
-    for directory in search_dirs:
-        if not directory.is_dir():
-            continue
-        # Walk subdirectories — lastwar-screenshots is now organised by
-        # device/configuration (pixel_10_pro_xl/, pixel_fold_*/) rather
-        # than a flat layout.
-        candidates = [directory / source_file, *directory.rglob(source_file)]
-        for candidate in candidates:
-            if candidate.is_file():
-                try:
-                    img = pil_from_bytes(candidate.read_bytes())
-                except Exception:
-                    continue
+    candidate = find_source_image(source_file)
+    if candidate is not None:
+        try:
+            img = pil_from_bytes(candidate.read_bytes())
+        except Exception:
+            img = None
+        if img is not None:
                 # Mirror the production stitcher's pre-processing step: if
                 # the source image is letterboxed (e.g. Pixel Fold inside-
                 # landscape split-screen capture), crop to the detected game

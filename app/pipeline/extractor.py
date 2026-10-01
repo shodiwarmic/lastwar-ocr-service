@@ -20,10 +20,10 @@ Row clustering algorithm:
     All remaining tokens that survive the cleaning pipeline form the player name.
 
 Known edge cases handled:
-    - Multi-word names: "gabriel garage", "Shhh mute", "Doc Hollagoon"
-    - Names with numbers: "Charlie9042", "Ruthless5432"
+    - Multi-word names: "marcel market", "Hush quiet", "Doc Marrowby"
+    - Names with numbers: "Victor9042", "Fearless5432"
     - Alliance tag variants: [PoWr], [PoWr]Pantheon of Wrath (no space)
-    - R-badge artefacts on Strength Ranking screen: "R4 ShodiWarmic"
+    - R-badge artefacts on Strength Ranking screen: "R4 KeldaVornic"
     - Self-player highlight row at the bottom (rank 48, rank 16, etc.)
     - Column header rows: "Ranking  Commander  Points"
     - Scrolling announcement banner (appears above the tab bar — filtered by Y)
@@ -32,6 +32,8 @@ Known edge cases handled:
 from __future__ import annotations
 
 from app.models.schemas import PlayerEntry, ScoreCandidate
+from app.pipeline import column_scoped
+from app.pipeline import ranks as rank_checksum
 from app.pipeline.screen_definitions import RowClusteringConfig, get_definition_for_category
 from app.utils.text_utils import (
     all_crash_splits,
@@ -70,6 +72,8 @@ def extract_players(
     screen_type: str,
     image_height: int = 2400,
     image_width: int = 1080,
+    report: dict | None = None,
+    y_offset: float = 0.0,
 ) -> list[PlayerEntry]:
     """
     Converts a flat list of OCR text blocks into a list of PlayerEntry objects.
@@ -92,6 +96,13 @@ def extract_players(
                       the absolute Y-tolerance for row clustering.
         image_width:  Width of the source image in pixels, used to compute
                       the relative gap threshold for word spacing detection.
+        report:       Optional dict the section's diagnostics are written
+                      into: `ranks` (the rank checksum, see ranks.py) and
+                      `order_violations`; for a mail also `mail_timestamp`
+                      and possibly `note`.
+        y_offset:     Where this section starts in the stitched image the
+                      block coordinates are in. Only column_scoped screens
+                      need it (their boundaries are fractions of the frame).
 
     Returns:
         List of validated PlayerEntry objects. Empty list if no valid rows found.
@@ -103,16 +114,23 @@ def extract_players(
     defn = get_definition_for_category(screen_type)
     row_config = defn.row_clustering if defn else RowClusteringConfig()
 
+    if row_config.strategy == "column_scoped":
+        return _extract_column_scoped(text_blocks, defn, screen_type, image_height,
+                                      image_width, y_offset, report)
+    rank_column = rank_checksum.rank_column(defn)
+    rank_tolerance = rank_checksum.RANK_Y_TOLERANCE_FRACTION * image_height
+
     # Step 1: Filter blocks that are clearly not player data
     filtered = _filter_noise_blocks(text_blocks)
 
-    # Step 2: Cluster into rows
-    rows = build_rows_from_blocks(filtered, image_height, row_config)
+    # Step 2: Cluster into rows, each around its score anchor
+    anchored = _build_anchored_rows(filtered, image_height, row_config)
+    rows = [row for row, _ in anchored]
 
     # Step 3-4: Parse and clean every row; note which rows involved a crash split
     # so we can validate them against their neighbours in the next pass.
-    _pre: list[dict] = []  # {"name": str, "score": int, "crash_text": str | None}
-    for row in rows:
+    _pre: list[dict] = []  # {"name": str, "score": int, "crash_text": str | None, ...}
+    for row, anchor in anchored:
         result = parse_player_row(row, image_width=image_width, row_config=row_config)
         if result is None:
             continue
@@ -130,7 +148,24 @@ def extract_players(
             None,
         )
         all_splits = all_crash_splits(crash_text) if crash_text else []
-        _pre.append({"name": clean_name, "score": score, "crash_text": crash_text, "all_splits": all_splits})
+
+        # The row's rank: a token in the rank column beside the score anchor,
+        # else the digits OCR merged into the front of the first name token.
+        rank, rank_source = None, None
+        if rank_column is not None:
+            rank = rank_checksum.find_rank_token(
+                filtered, rank_column, image_width,
+                anchor["avg_y"] - rank_tolerance, anchor["avg_y"] + rank_tolerance,
+                anchor["avg_y"],
+            )
+            rank_source = "column" if rank is not None else None
+            if rank is None:
+                first = next((b for b in row if b is not anchor), None)
+                rank = rank_checksum.rank_from_name_token(first, rank_column, image_width)
+                rank_source = "name" if rank is not None else None
+
+        _pre.append({"name": clean_name, "score": score, "crash_text": crash_text,
+                     "all_splits": all_splits, "rank": rank, "rank_source": rank_source})
 
     # Step 5: Validate crash rows using adjacent scores as monotonicity bounds.
     #
@@ -141,7 +176,7 @@ def extract_players(
     # progressively larger alternative splits (ascending score order) until one
     # fits.  When no neighbour exists (rank 1 has no row above; the last visible
     # row has no row below) only the available single bound is enforced.
-    players: list[PlayerEntry] = []
+    emitted: list[dict] = []
     for i, entry in enumerate(_pre):
         name       = entry["name"]
         score      = entry["score"]
@@ -192,10 +227,29 @@ def extract_players(
                         break
 
         try:
-            players.append(PlayerEntry(player_name=name, score=score, candidates=candidates))
+            PlayerEntry(player_name=name, score=score, candidates=candidates)
         except Exception:
             # Pydantic validation failed — skip this row
             continue
+        emitted.append({"name": name, "score": score, "candidates": candidates,
+                        "rank": entry["rank"], "rank_source": entry["rank_source"]})
+
+    # Step 6: the rank checksum over the rows actually emitted. Fills in ranks
+    # whose position settles them; never changes a read one.
+    checksum = rank_checksum.apply_checksum(emitted)
+    if report is not None:
+        if checksum["ranks"] is not None:
+            report["ranks"] = checksum["ranks"]
+        if checksum["order_violations"]:
+            report["order_violations"] = checksum["order_violations"]
+
+    players = [
+        PlayerEntry(
+            player_name=e["name"], score=e["score"], candidates=e["candidates"],
+            rank=e["rank"], rank_inferred=True if e["rank_source"] == "inferred" else None,
+        )
+        for e in emitted
+    ]
 
     logger.info(
         "Extraction complete",
@@ -207,6 +261,32 @@ def extract_players(
         },
     )
 
+    return players
+
+
+def _extract_column_scoped(text_blocks, defn, screen_type, image_height, image_width,
+                           y_offset, report) -> list[PlayerEntry]:
+    """The post-event mails: see app/pipeline/column_scoped.py. None of the
+    score_anchored cleaning below applies — names come back as read."""
+    rows, section_report = column_scoped.extract(
+        text_blocks, defn, image_height, image_width, y_offset)
+    if report is not None:
+        report.update(section_report)
+    players = []
+    for row in rows:
+        try:
+            players.append(PlayerEntry(
+                player_name=row["name"], score=row["score"], rank=row["rank"],
+                rank_inferred=True if row["rank_source"] == "inferred" else None,
+                score_unread=True if row["score_unread"] else None,
+            ))
+        except Exception:
+            continue
+    logger.info(
+        "Extraction complete",
+        extra={"screen_type": screen_type, "blocks_input": len(text_blocks),
+               "players_found": len(players)},
+    )
     return players
 
 
@@ -245,6 +325,15 @@ def build_rows_from_blocks(
         List of rows, each containing score block + associated name blocks,
         sorted left-to-right.
     """
+    return [row for row, _ in _build_anchored_rows(text_blocks, image_height, row_config)]
+
+
+def _build_anchored_rows(
+    text_blocks: list[dict],
+    image_height: int = 2400,
+    row_config: RowClusteringConfig = None,
+) -> list[tuple[list[dict], dict]]:
+    """build_rows_from_blocks, keeping each row's score anchor block."""
     if not text_blocks:
         return []
 
@@ -270,7 +359,7 @@ def build_rows_from_blocks(
         ]
         row_blocks.append(score_block)
         row_blocks.sort(key=lambda b: b["avg_x"])
-        rows.append(row_blocks)
+        rows.append((row_blocks, score_block))
 
     return rows
 
@@ -281,7 +370,7 @@ def _is_score_block(block: dict, min_score: int = MIN_VALID_SCORE) -> bool:
 
     Handles two cases:
     1. Pure numeric token (e.g. "3,045,000") — direct parse_score check.
-    2. Crash token (e.g. "Ruthless54323,045,000") — name+score merged into
+    2. Crash token (e.g. "Fearless54323,045,000") — name+score merged into
        one block when OCR sees no gap between a digit-ending name and the
        score.  split_name_score_crash extracts the embedded score.
     """
@@ -317,7 +406,7 @@ def parse_player_row(
        other text that appears to the right of or at the same X as the score.
     3. Reconstruct the name string using pixel gap detection: insert a space
        between tokens when the gap between them exceeds GAP_THRESHOLD pixels,
-       which correctly handles multi-word names like "gabriel garage" and
+       which correctly handles multi-word names like "marcel market" and
        avoids over-spacing in compact names.
 
     Args:
@@ -362,7 +451,7 @@ def parse_player_row(
             break
 
     # Pass 2: crash-token fallback — name+score merged into one block.
-    # e.g. "Ruthless54323,045,000" → name_prefix="Ruthless5432", score="3,045,000"
+    # e.g. "Fearless54323,045,000" → name_prefix="Fearless5432", score="3,045,000"
     if score_index is None:
         for i in range(len(row_blocks) - 1, -1, -1):
             split = split_name_score_crash(row_blocks[i]["text"])
@@ -456,8 +545,9 @@ def is_valid_player_row(name: str, score, min_score: int = MIN_VALID_SCORE) -> b
 
     Rejects:
     - Empty names
-    - None or zero scores
-    - Scores below min_score (filters out rank numbers 1–100)
+    - None scores
+    - Scores below min_score (filters out rank numbers 1–100). With a
+      min_score of 0, a zero score passes.
     - Names that match known UI labels (column headers, tab names)
 
     Args:

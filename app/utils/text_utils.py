@@ -46,7 +46,7 @@ _COMMA_GROUPED_NUMBER_RE = re.compile(_crash_tokens().score_suffix_pattern)
 
 # Stray non-alphanumeric characters that are clearly OCR noise.
 # Keeps spaces, hyphens, underscores, apostrophes, and extended Latin/Cyrillic
-# so accented names like Pàcha are preserved.
+# so accented names like Rèvo are preserved.
 _OCR_NOISE_RE = re.compile(r"[^\w\s\-_\'\u00C0-\u024F\u0400-\u04FF]")
 
 # Thai character range — appears as OCR noise from rank badge icons in
@@ -85,7 +85,7 @@ _ALLIANCE_SUFFIX_RES = [
 def _looks_like_tag(token: str) -> bool:
     """Returns True if a token matches the alliance abbreviation pattern."""
     # Game constraint: alliance tags are exactly 3–4 alphanumeric characters.
-    # Keeping this tight prevents 6-char player names like "SayTin" or "100Max"
+    # Keeping this tight prevents 6-char player names like "RayFin" or "100Max"
     # from being misidentified as bare tag tokens.
     if not 3 <= len(token) <= 4:
         return False
@@ -141,8 +141,8 @@ def strip_alliance_tag(name: str) -> str:
         Name with all alliance tags removed and surrounding whitespace stripped.
 
     Examples:
-        strip_alliance_tag("[PoWr] SirBucksALot") → "SirBucksALot"
-        strip_alliance_tag("ShodiWarmic [PoWr]Pantheon of Wrath") → "ShodiWarmic Pantheon of Wrath"
+        strip_alliance_tag("[PoWr] SirCoinsALot") → "SirCoinsALot"
+        strip_alliance_tag("KeldaVornic [PoWr]Pantheon of Wrath") → "KeldaVornic Pantheon of Wrath"
     """
     return _ALLIANCE_TAG_RE.sub("", name).strip()
 
@@ -161,8 +161,8 @@ def strip_leading_rank(name: str) -> str:
         String with the leading rank number removed.
 
     Examples:
-        strip_leading_rank("1 SirBucksALot") → "SirBucksALot"
-        strip_leading_rank("48ShodiWarmic")   → "ShodiWarmic"
+        strip_leading_rank("1 SirCoinsALot") → "SirCoinsALot"
+        strip_leading_rank("48KeldaVornic")   → "KeldaVornic"
     """
     return _LEADING_RANK_RE.sub("", name).strip()
 
@@ -182,8 +182,8 @@ def strip_rbadge_artefacts(name: str) -> str:
         Name with all Rn tokens removed.
 
     Examples:
-        strip_rbadge_artefacts("R4 ShodiWarmic") → "ShodiWarmic"
-        strip_rbadge_artefacts("SirBucksALot R4") → "SirBucksALot"
+        strip_rbadge_artefacts("R4 KeldaVornic") → "KeldaVornic"
+        strip_rbadge_artefacts("SirCoinsALot R4") → "SirCoinsALot"
     """
     return _RBADGE_RE.sub("", name).strip()
 
@@ -242,8 +242,8 @@ def strip_bare_tags(name: str) -> str:
     Removes bare alliance tag abbreviations that appear without brackets.
 
     OCR sometimes returns [PoWr] with the brackets dropped in two ways:
-    1. As a standalone spaced token: "PoWr SirBucksALot"
-    2. Directly concatenated: "PoWrSirBucksALot" (no space)
+    1. As a standalone spaced token: "PoWr SirCoinsALot"
+    2. Directly concatenated: "PoWrSirCoinsALot" (no space)
 
     We handle both cases:
     - Token pass: split by spaces, remove tokens matching the tag pattern
@@ -259,14 +259,14 @@ def strip_bare_tags(name: str) -> str:
         Name with detected alliance abbreviation tokens and prefixes removed.
 
     Examples:
-        strip_bare_tags("PoWr SirBucksALot")    → "SirBucksALot"
-        strip_bare_tags("PoWrSirBucksALot")     → "SirBucksALot"
+        strip_bare_tags("PoWr SirCoinsALot")    → "SirCoinsALot"
+        strip_bare_tags("PoWrSirCoinsALot")     → "SirCoinsALot"
         strip_bare_tags("CoRe PlayerName")       → "PlayerName"
-        strip_bare_tags("SirBucksALot")          → "SirBucksALot"  (unchanged)
+        strip_bare_tags("SirCoinsALot")          → "SirCoinsALot"  (unchanged)
     """
     # Pass 1: remove space-separated tokens that look like tags, but only if
     # there are other tokens remaining — avoids wiping out a player name that
-    # happens to match the tag pattern (e.g. "SayTin", "CoNor").
+    # happens to match the tag pattern (e.g. "RayFin", "CoNor").
     tokens = name.split()
     non_tags = [t for t in tokens if not _looks_like_tag(t)]
     if non_tags:
@@ -281,7 +281,7 @@ def strip_alliance_suffixes(name: str) -> str:
 
     Some alliances display their full name as a subtitle beneath the player
     name. Vision API reads this as part of the same text block, producing
-    strings like "SirBucksALot Pantheon of Wrath". The bracket tag [PoWr]
+    strings like "SirCoinsALot Pantheon of Wrath". The bracket tag [PoWr]
     is stripped by strip_alliance_tag, but the display name survives.
 
     Entries in _ALLIANCE_NAME_SUFFIXES are matched case-insensitively and
@@ -297,7 +297,7 @@ def strip_alliance_suffixes(name: str) -> str:
         Name with all known alliance display suffixes removed.
 
     Example:
-        strip_alliance_suffixes("SirBucksALot Pantheon of Wrath") → "SirBucksALot"
+        strip_alliance_suffixes("SirCoinsALot Pantheon of Wrath") → "SirCoinsALot"
     """
     for pattern in _ALLIANCE_SUFFIX_RES:
         name = pattern.sub("", name)
@@ -326,11 +326,11 @@ def clean_player_name(raw_name: str) -> str:
         Clean player name suitable for storage and display.
 
     Examples:
-        clean_player_name("48 R4 [PoWr] ShodiWarmic") → "ShodiWarmic"
-        clean_player_name("[PoWr] SirBucksALot Pantheon of Wrath") → "SirBucksALot"
+        clean_player_name("48 R4 [PoWr] KeldaVornic") → "KeldaVornic"
+        clean_player_name("[PoWr] SirCoinsALot Pantheon of Wrath") → "SirCoinsALot"
     """
     # Truncate at the first open bracket when the name precedes the tag.
-    # e.g. "SirBucksALot [PoWr] Pantheon of Wrath" → "SirBucksALot"
+    # e.g. "SirCoinsALot [PoWr] Pantheon of Wrath" → "SirCoinsALot"
     # Only apply if the pre-bracket content is a plausible name (not just
     # rank/badge noise like "48 R4"). Fall through to strip_alliance_tag
     # for cases where the tag comes before the name.
@@ -354,7 +354,7 @@ def split_name_score_crash(text: str) -> Optional[tuple[str, str]]:
 
     When a player name ends in one or more digits and the score immediately
     follows with no separating space, Vision API may return them as a single
-    block, e.g. "Ruthless54323,045,000" or "CheeseKillers22,622,000".
+    block, e.g. "Fearless54323,045,000" or "BreadEaters22,622,000".
 
     Strategy:
         Scan right-to-left through the string looking for the rightmost
@@ -374,11 +374,11 @@ def split_name_score_crash(text: str) -> Optional[tuple[str, str]]:
         (name_prefix, score_str) tuple, or None if no embedded score found.
 
     Examples:
-        split_name_score_crash("Ruthless54323,045,000")  → ("Ruthless5432", "3,045,000")
-        split_name_score_crash("CheeseKillers22,622,000") → ("CheeseKillers2", "2,622,000")
-        split_name_score_crash("Splendiddragon2,552,780") → ("Splendiddragon", "2,552,780")
+        split_name_score_crash("Fearless54323,045,000")  → ("Fearless5432", "3,045,000")
+        split_name_score_crash("BreadEaters22,622,000") → ("BreadEaters2", "2,622,000")
+        split_name_score_crash("Glitterwyvern2,552,780") → ("Glitterwyvern", "2,552,780")
         split_name_score_crash("3,045,000")               → None  (pure numeric)
-        split_name_score_crash("ShodiWarmic")             → None  (no score suffix)
+        split_name_score_crash("KeldaVornic")             → None  (no score suffix)
     """
     if not any(c.isalpha() for c in text):
         return None  # Pure numeric — handled by is_numeric_token / parse_score
@@ -412,7 +412,7 @@ def is_numeric_token(s: str) -> bool:
 
     Examples:
         is_numeric_token("161,528,090") → True
-        is_numeric_token("SirBucksALot") → False
+        is_numeric_token("SirCoinsALot") → False
         is_numeric_token("R4") → False
     """
     return bool(_SCORE_RE.match(s.strip()))
@@ -460,10 +460,10 @@ def all_crash_splits(text: str) -> list[tuple[str, str]]:
     comma-grouped score.
 
     Examples:
-        all_crash_splits("Ruthless54323,045,000")
-            → [("Ruthless5432", "3,045,000"),
-               ("Ruthless543",  "23,045,000"),
-               ("Ruthless54",   "323,045,000")]
+        all_crash_splits("Fearless54323,045,000")
+            → [("Fearless5432", "3,045,000"),
+               ("Fearless543",  "23,045,000"),
+               ("Fearless54",   "323,045,000")]
     """
     if not any(c.isalpha() for c in text):
         return []
@@ -524,6 +524,6 @@ def is_ui_label(text: str) -> bool:
 
     Examples:
         is_ui_label("Commander") → True
-        is_ui_label("SirBucksALot") → False
+        is_ui_label("SirCoinsALot") → False
     """
     return text.strip().lower() in _UI_LABELS

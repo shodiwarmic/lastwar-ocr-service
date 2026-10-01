@@ -226,7 +226,7 @@ def extract_text_blocks(annotation) -> list[dict]:
         List of dicts, each representing one word:
         [
             {
-                "text": "SirBucksALot",
+                "text": "SirCoinsALot",
                 "bbox": <BoundingPoly or dict with vertices key>,
                 "avg_x": 245.0,
                 "avg_y": 388.0,

@@ -26,6 +26,14 @@ Prerequisites:
     - pip install -r requirements.txt run from the project root
     - Run from the project root directory so imports resolve correctly
 
+Recordings of real screens carry real player names: write them into a clone
+of the private fixtures repository (--output $LASTWAR_FIXTURES/ocr-service/
+ocr_responses), never into this repository. Name each image so the tests can
+infer its category: a day or screen name for the ranking screens
+(`Friday-215600.png`), `<category>__<device>__<frame>` for the mails
+(`zombie_siege__1080x2404__05.png`) — mail frames come as 01.png per folder,
+and recordings with the same stem would overwrite each other.
+
 Output:
     One JSON file per image, named <original_filename_without_extension>.json
     Each file contains the full Vision API TextAnnotation serialised to JSON,

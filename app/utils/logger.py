@@ -16,6 +16,7 @@ Usage in any module:
 
 import json
 import logging
+import os
 import sys
 from typing import Optional
 
@@ -64,6 +65,19 @@ class StructuredJsonFormatter(logging.Formatter):
         return json.dumps(log_entry)
 
 
+def _level() -> int:
+    """
+    The level every logger runs at: LOG_LEVEL from the environment (DEBUG,
+    INFO, WARNING, ERROR), INFO when unset or unknown. The classifier and
+    extractor log every step at DEBUG, which is wanted when tuning a screen
+    and noise otherwise; raise it on one Cloud Run revision with
+    `gcloud run services update lastwar-ocr-service --region us-east1
+    --update-env-vars LOG_LEVEL=DEBUG`.
+    """
+    level = logging.getLevelName(os.environ.get("LOG_LEVEL", "INFO").strip().upper())
+    return level if isinstance(level, int) else logging.INFO
+
+
 def get_logger(name: str) -> logging.Logger:
     """
     Returns a logger instance configured for Cloud Run structured logging.
@@ -89,7 +103,7 @@ def get_logger(name: str) -> logging.Logger:
     if logger.handlers:
         return logger
 
-    logger.setLevel(logging.DEBUG)
+    logger.setLevel(_level())
 
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(StructuredJsonFormatter())

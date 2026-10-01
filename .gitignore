@@ -33,7 +33,8 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
-# Deploy script contains real project config — use deploy.sh.sample as a template
+# A hand-made deploy script would hold real project config. Releases deploy
+# through docker-publish.yml; see docs/RELEASING.md.
 deploy.sh
 
 # OCR fixtures contain raw API responses - commit intentionally, not accidentally
