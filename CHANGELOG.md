@@ -4,7 +4,7 @@ Every release of the OCR service, newest first. The version describes the wire c
 (see [docs/RELEASING.md](docs/RELEASING.md)); each entry is written in the pull request that
 becomes the release, and the release notes are cut from it.
 
-## [v1.0.0] — unreleased
+## [v1.0.0] — 2026-10-01
 
 The first versioned release. Every earlier image was unversioned: GHCR's `:latest` and
 `:local` moved on every merge, and production ran a hand-built image tied to no commit.
