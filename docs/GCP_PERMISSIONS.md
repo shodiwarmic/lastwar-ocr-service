@@ -142,6 +142,17 @@ with alerts at 50 %, 90 % and 100 % of a small amount (the project runs within
 the free tiers, so a few dollars is plenty). A budget alerts; it does not stop
 spending — the scale limit above is what caps it.
 
+## Debug logging on one revision
+
+The service logs at `INFO`. To see the classifier's and extractor's step-by-step
+`DEBUG` lines while tuning a screen, raise it on production for a while and put it
+back afterwards (each command creates a new revision):
+
+```bash
+gcloud run services update lastwar-ocr-service --region us-east1 --update-env-vars LOG_LEVEL=DEBUG
+gcloud run services update lastwar-ocr-service --region us-east1 --remove-env-vars LOG_LEVEL
+```
+
 ## Cloud Build leftovers
 
 Releases build in GitHub Actions; nothing uses Cloud Build. An install that

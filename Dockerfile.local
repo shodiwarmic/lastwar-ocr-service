@@ -15,10 +15,9 @@
 #     ~/.paddlex/. Mount /home/appuser/.paddlex as a volume in
 #     docker-compose to avoid re-downloading on container restart.
 #   * Stylised header text (e.g. "STRENGTH RANKING") is unreliable, so the
-#     local pipeline expects callers to pass `?category=…` to /process-batch
-#     to skip auto-classification. See LOCAL_OCR_POC.md in
-#     lastwar-screenshots and the Mobile API section of
-#     lastwar-alliance-manager/CLAUDE.md.
+#     local pipeline expects callers to pass `category` to /process-batch
+#     to skip auto-classification. The calibration notes (LOCAL_OCR_POC.md)
+#     are in the private fixtures repository, beside the screenshots.
 
 FROM python:3.10-slim
 

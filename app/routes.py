@@ -298,6 +298,15 @@ def process_batch():
                 y_offset=region.y_start,
             )
             note = report.pop("note", None) or (None if players else "no_players")
+            if not players:
+                # A classified section that yields nobody is the signature of
+                # a layout the definitions no longer match; worth a WARNING
+                # in Cloud Logging, not just a diagnostics field.
+                logger.warning(
+                    "Section yielded no players",
+                    extra={"image_filename": region.filename, "category": category,
+                           "note": note, "blocks": len(section_blocks)},
+                )
 
             result.add_entries(category, players)
             batch_results.setdefault(category, []).extend(players)

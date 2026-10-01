@@ -8,7 +8,8 @@ Designed for deployment on **Google Cloud Run** with **Google Cloud Vision** for
 
 ## Features
 
-- **Seven output categories:** Daily Rank (Mon–Sat), Weekly Rank, Strength Ranking (Power, Kills, Donation Daily, Donation Weekly)
+- **Twenty-six categories:** Daily Rank (Mon–Sat), Weekly Rank, Strength Ranking (Power, Kills, Donation Daily, Donation Weekly), the twelve Alliance Contribution views, and the three post-event mails (Alliance Exercise, Zombie Siege, Desert Storm)
+- **Ranks as a checksum:** each row carries its rank, and each section reports gaps and duplicates so a dropped or doubled row is visible
 - **YAML-driven screen definitions:** classification thresholds, tab positions, and row-clustering parameters live in `app/screen_definitions/` — no code changes needed to tune them
 - **Stitch-first pipeline:** groups screenshots by resolution, stitches into a single tall image, runs one Vision API call per group, then splits the result back into per-image sections
 - **Two-pass classification:** fast colour-sampling pre-filter (Pass 1) + OCR-assisted fallback (Pass 2) for ambiguous images
@@ -56,37 +57,42 @@ lastwar-ocr-service/
 ├── app/
 │   ├── __init__.py              Flask app factory
 │   ├── routes.py                /process-batch and /health endpoints
+│   ├── version.py               Release and commit, baked in at build time
 │   ├── screen_definitions/      Git submodule — YAML screen definitions
 │   │   ├── catalog.yaml         Ordered list of screens
 │   │   ├── meta-schema.json     JSON Schema for definition files
-│   │   ├── README.md            Schema reference and authoring guide
-│   │   └── screens/
-│   │       ├── daily_ranking.yaml
-│   │       ├── weekly_ranking.yaml
-│   │       └── strength_ranking.yaml
+│   │   ├── README.md            Schema reference, Consumer Contract, wire contract v1
+│   │   └── screens/             Five ranking screens and three mails
 │   ├── pipeline/
-│   │   ├── screen_definitions.py  Loads and caches YAML definitions
-│   │   ├── classifier.py          Two-pass screenshot classification
-│   │   ├── stitcher.py            Resolution grouping and vertical stitching
+│   │   ├── screen_definitions.py  Loads and caches YAML definitions; derives categories
+│   │   ├── classifier.py          Two-pass screenshot classification (ranking screens)
+│   │   ├── stitcher.py            Window crop, resolution grouping, vertical stitching
 │   │   ├── ocr_client.py          Google Cloud Vision wrapper
-│   │   └── extractor.py           OCR text → structured player data
+│   │   ├── ocr_client_paddle.py   PaddleOCR backend (the local image)
+│   │   ├── extractor.py           OCR text → structured player data
+│   │   ├── column_scoped.py       The mails' row extraction
+│   │   └── ranks.py               Rank reading and the rank checksum
 │   ├── models/
-│   │   └── schemas.py             Pydantic models: PlayerEntry, BatchResult
+│   │   └── schemas.py             Pydantic models, contract versions, categories
 │   └── utils/
-│       ├── logger.py              Structured JSON logger for Cloud Run
+│       ├── logger.py              Structured JSON logger (LOG_LEVEL, default INFO)
 │       ├── image_utils.py         PIL helpers
+│       ├── window_detect.py       Game-window detection
 │       └── text_utils.py          Regex patterns and string cleaning
 ├── tests/
-│   ├── conftest.py                Shared fixtures and synthetic block builders
+│   ├── conftest.py                Fixture loading (LASTWAR_FIXTURES) and block builders
 │   ├── fixtures/
-│   │   └── ocr_responses/         Captured Vision API JSON fixtures (git-ignored)
-│   ├── test_classifier.py
-│   ├── test_extractor.py
-│   └── test_routes.py
+│   │   ├── ocr_responses/         Scrubbed public recordings (the full set is private)
+│   │   ├── smoke/                 The release smoke test's synthetic frame
+│   │   └── extraction_snapshot.json
+│   └── test_*.py
 ├── tools/
-│   └── capture_ocr_fixture.py    CLI: capture real OCR responses as test fixtures
-├── Dockerfile
-├── requirements.txt
+│   ├── capture_ocr_fixture.py    Record real OCR responses
+│   └── scrub_fixture.py          Make a recording safe to publish
+├── docs/                          GCP_PERMISSIONS.md, RELEASING.md
+├── deploy/                        Artifact Registry cleanup policy
+├── Dockerfile, Dockerfile.local   Cloud (Vision) and local (PaddleOCR) images
+├── CHANGELOG.md
 └── main.py                        Gunicorn entrypoint
 ```
 

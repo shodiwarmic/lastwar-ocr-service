@@ -39,6 +39,11 @@ The first versioned release. Every earlier image was unversioned: GHCR's `:lates
   category returned the first category's results. It is now keyed on the bytes, the category
   and the contract version.
 
+### Logging
+
+- Logs default to `INFO` (they were hard-wired to `DEBUG`); `LOG_LEVEL` raises them.
+- A section that is classified but yields no players logs a `WARNING`.
+
 ### Releases and deployment
 
 - Releases are `vX.Y.Z` tags. A merge to `main` publishes only `:edge` / `:edge-local`.
