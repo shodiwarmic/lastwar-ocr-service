@@ -74,10 +74,16 @@ class PlayerEntry(BaseModel):
                      The caller should pick the candidate whose player_name
                      matches a known member; fall back to candidates[0] otherwise.
                      Absent entirely when the row was unambiguous.
+        rank:        The row's rank as read beside it (or from digits merged
+                     into its name), or inferred. Absent when neither.
+        rank_inferred: True when `rank` was not read but inferred from the read
+                     ranks either side. Absent otherwise.
     """
     player_name: str
     score: int
     candidates: Optional[list[ScoreCandidate]] = None
+    rank: Optional[int] = None
+    rank_inferred: Optional[bool] = None
 
     @field_validator("player_name")
     @classmethod
@@ -316,6 +322,10 @@ class SectionDiagnostic(BaseModel):
     players_found: int
     cache_hit: bool = False
     note: Optional[str] = None
+    # The rank checksum (app/pipeline/ranks.py) and rows whose score exceeds
+    # the row above. Absent when no rank was read / nothing is out of order.
+    ranks: Optional[dict] = None
+    order_violations: Optional[list[dict]] = None
 
 
 class BatchDiagnostic(BaseModel):

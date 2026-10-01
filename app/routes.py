@@ -85,9 +85,12 @@ def _make_section(
     players_found: int,
     note,
     cache_hit: bool = False,
+    report: dict | None = None,
 ) -> SectionDiagnostic:
-    """Builds a SectionDiagnostic from an ImageRegion plus classification outcome."""
+    """Builds a SectionDiagnostic from an ImageRegion plus classification outcome,
+    and whatever the extractor reported for it (rank checksum, order)."""
     return SectionDiagnostic(
+        **(report or {}),
         image=region.filename,
         batch_index=batch_index,
         y_range=(region.y_start, region.y_end),
@@ -285,11 +288,13 @@ def process_batch():
                 continue
 
             section_height = region.y_end - region.y_start
+            report: dict = {}
             players = extract_players(
                 section_blocks,
                 screen_type=category,
                 image_height=section_height,
                 image_width=stitched_image.width,
+                report=report,
             )
 
             result.add_entries(category, players)
@@ -299,6 +304,7 @@ def process_batch():
                 method=classification_method(category, confidence, override=is_override),
                 players_found=len(players),
                 note=None if players else "no_players",
+                report=report,
             ))
 
             logger.info(
