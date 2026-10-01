@@ -98,15 +98,21 @@ lastwar-ocr-service/
 
 Accepts a batch of screenshots and returns extracted player data grouped by category.
 
+The request and response are **wire contract v1**, whose canonical text is the
+screen-definitions README (Consumer Contract → Wire contract v1).
+
 **Request**
 ```
-Content-Type: multipart/form-data
-Field:        images  (1–100 image files)
+Content-Type:   multipart/form-data
+images          1–100 image files
+category        optional — skip classification and read every frame as this category
+schema_version  optional — the contract version the caller will parse; absent means 1
 ```
 
-**Response 200** — a `{results, diagnostics}` envelope:
+**Response 200** — a `{schema_version, results, diagnostics}` envelope:
 ```json
 {
+  "schema_version": 1,
   "results": {
     "monday":           [{"player_name": "Charlie9042",      "score": 38686463}],
     "friday":           [{"player_name": "SirBucksALot",     "score": 45635206}],
@@ -144,14 +150,18 @@ validation failures return `4xx {"error": "..."}`.
 | `donation_daily` | Strength Ranking — Donation tab, Daily sub-tab |
 | `donation_weekly` | Strength Ranking — Donation tab, Weekly sub-tab |
 
-**Response 400** — missing or invalid input (no images, too many images, non-image files)  
+**Response 400** — missing or invalid input (no images, too many images, non-image files), an
+unknown `category` (`code: "category_not_supported"`), or an unsupported `schema_version`
+(`code: "schema_not_supported"`)  
 **Response 500** — internal processing error
 
 ---
 
 ### `GET /health`
 
-Cloud Run health check. Returns `{"status": "ok"}` with HTTP 200.
+Liveness and capabilities: `{"status": "ok", "version": "v1.0.0", "commit": "<sha>",
+"schema_versions": [1], "categories": [...]}`. A caller checks it before relying on a category
+or a contract version. (Cloud Run's startup probe is a TCP check, not this route.)
 
 ---
 
@@ -242,43 +252,70 @@ pytest -k "RealFixture"
 
 ## Deployment to Cloud Run
 
-### 1. Enable required APIs
+**The service is never public.** Deploy it with `--no-allow-unauthenticated` and grant
+`roles/run.invoker` to the app's service account alone: every request spends Vision units
+billed to you, and `/health` names the exact release and commit it runs. The identities,
+their grants and the full one-time setup are in [`docs/GCP_PERMISSIONS.md`](docs/GCP_PERMISSIONS.md).
+
+### Self-hosting the cloud image
+
+Run a **released** image (`ghcr.io/shodiwarmic/lastwar-ocr-service:vX.Y.Z`; see
+[`docs/RELEASING.md`](docs/RELEASING.md) for what each tag means). Cloud Run cannot pull from
+GHCR directly, so put the image in an Artifact Registry repository in your service's region
+(pulls within a region are free). Either let a **remote repository** proxy GHCR:
+
 ```bash
-gcloud services enable run.googleapis.com vision.googleapis.com cloudbuild.googleapis.com
+gcloud artifacts repositories create ghcr-proxy --location us-east1 \
+  --repository-format docker --mode remote-repository --remote-docker-repo https://ghcr.io
+# image: us-east1-docker.pkg.dev/$PROJECT/ghcr-proxy/shodiwarmic/lastwar-ocr-service:vX.Y.Z
 ```
 
-### 2. Build and deploy
+or copy the release into a standard repository:
+
 ```bash
-export PROJECT_ID=your-gcp-project-id
-export REGION=us-central1
-export SERVICE_NAME=lastwar-ocr-service
-
-gcloud builds submit --tag gcr.io/$PROJECT_ID/$SERVICE_NAME
-
-gcloud run deploy $SERVICE_NAME \
-  --image gcr.io/$PROJECT_ID/$SERVICE_NAME \
-  --platform managed \
-  --region $REGION \
-  --allow-unauthenticated \
-  --memory 512Mi \
-  --timeout 120
+docker pull ghcr.io/shodiwarmic/lastwar-ocr-service:vX.Y.Z
+docker tag  ghcr.io/shodiwarmic/lastwar-ocr-service:vX.Y.Z \
+            us-east1-docker.pkg.dev/$PROJECT/lastwar-ocr/lastwar-ocr-service:vX.Y.Z
+docker push us-east1-docker.pkg.dev/$PROJECT/lastwar-ocr/lastwar-ocr-service:vX.Y.Z
 ```
 
-### 3. Grant Vision API access
-```bash
-SA_EMAIL=$(gcloud run services describe $SERVICE_NAME --region $REGION \
-  --format="value(spec.template.spec.serviceAccountName)")
+Then deploy it, as a dedicated runtime account that can call Vision and nothing else:
 
-gcloud projects add-iam-policy-binding $PROJECT_ID \
-  --member="serviceAccount:$SA_EMAIL" \
-  --role="roles/cloudvision.user"
+```bash
+export PROJECT=your-gcp-project-id REGION=us-east1
+gcloud run deploy lastwar-ocr-service --region $REGION \
+  --image <the image above> \
+  --service-account lastwar-ocr-runtime@$PROJECT.iam.gserviceaccount.com \
+  --no-allow-unauthenticated \
+  --concurrency 1 --max-instances 3 --memory 1Gi --cpu 1 --timeout 120
+gcloud run services add-iam-policy-binding lastwar-ocr-service --region $REGION \
+  --member serviceAccount:<the app's account> --role roles/run.invoker
 ```
 
-### 4. Set a billing budget alert
+`--concurrency 1`: gunicorn runs one sync worker, so a second request on an instance only
+waits, against the 120 s timeout. `--max-instances 3` bounds both parallelism and spend.
+
+**Keep a few versions, not all.** A cleanup policy on your repository stops old images piling
+up. This project keeps the three most recent ([`deploy/artifact-registry-cleanup.json`](deploy/artifact-registry-cleanup.json)):
+
 ```bash
-# Via Cloud Console: Billing → Budgets & alerts → Create budget
-# Recommended: Alert at $1 spend
+gcloud artifacts repositories set-cleanup-policies lastwar-ocr --location $REGION \
+  --policy deploy/artifact-registry-cleanup.json --no-dry-run
 ```
+
+Three is our default, not a requirement: a deleted image breaks rolling back to the revision
+that used it, so keep as many as you might roll back across. GHCR keeps every release.
+
+**Set a billing budget alert — required.** Vision, Translation and the archive bucket all bill
+the same account; [`docs/GCP_PERMISSIONS.md`](docs/GCP_PERMISSIONS.md#billing-a-budget-alert-is-required)
+has the steps.
+
+### This project's production
+
+Production is deployed by the release workflow, never by hand: a `vX.Y.Z` tag publishes the
+image to GHCR and to a private Artifact Registry repository with the same digest, deploys it
+as a no-traffic revision, smoke-tests it, and then moves traffic. See
+[`docs/RELEASING.md`](docs/RELEASING.md).
 
 ---
 
@@ -314,7 +351,7 @@ Edit the relevant YAML file in `app/screen_definitions/screens/` and increment i
 3. Capture an OCR fixture with `tools/capture_ocr_fixture.py` and name it to include the new category keyword
 4. Run `pytest` — the new fixture is auto-discovered by all three test files
 
-No Python code changes are needed for screens that fit the existing classifier strategies (`color_fraction` / `brightest` active-tab detection, `score_anchored` row clustering).
+Tuning needs no Python change, and neither does a screen that reuses an existing extraction strategy (`score_anchored`, `column_scoped`) **when the caller sends its category**. Auto-detection is different: the classifier is a fixed cascade over the five ranking screen families, not a loop over the catalog, so a screen the service should recognise unprompted needs a classifier branch. The post-event mails are override-only for that reason.
 
 ### Adding a new alliance display name to strip
 Add it to `_ALLIANCE_NAME_SUFFIXES` in [`app/utils/text_utils.py`](app/utils/text_utils.py).

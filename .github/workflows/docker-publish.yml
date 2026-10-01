@@ -1,94 +1,308 @@
 name: Build and Publish Docker Images
 
-# Builds and publishes BOTH OCR-service images:
-#   * :latest  — Dockerfile (Google Cloud Vision backend, Cloud Run default).
-#   * :local   — Dockerfile.local (PaddleOCR sidecar for self-hosted
-#                installations of lastwar-alliance-manager).
+# Two images: the cloud image (Dockerfile, Google Cloud Vision — production on
+# Cloud Run) and the local image (Dockerfile.local, PaddleOCR — the sidecar
+# self-hosted installs of lastwar-alliance-manager run as :local).
 #
-# alliance-manager's docker-compose.local-ocr.yml references
-# ghcr.io/shodiwarmic/lastwar-ocr-service:local; this workflow keeps
-# that tag in sync with main on every push.
+#   push to main    -> :edge, :edge-local. Nothing a sidecar follows moves.
+#   push tag vX.Y.Z -> Publish  :vX.Y.Z, :vX.Y.Z-local to GHCR, and the cloud
+#                               image to our private Artifact Registry with
+#                               the same digest
+#                      Deploy   that digest to Cloud Run as a no-traffic
+#                               revision, smoke-test it, then move traffic
+#                      Promote  :latest, :local, :vX.Y, :vX.Y-local, and the
+#                               GitHub Release
+#
+# The floating tags move last, so a release that fails anywhere moves nothing
+# a sidecar or an operator follows. See docs/RELEASING.md.
+#
+# The tag must be pushed from a personal clone. A tag pushed by an action using
+# the default GITHUB_TOKEN triggers no workflow at all, so the release would
+# build nothing and fail silently.
 
 on:
   push:
     branches: ['main']
+    tags: ['v*']
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
+  PROJECT_ID: bionic-feat-490600-e3
+  REGION: us-east1
+  SERVICE: lastwar-ocr-service
+  AR_IMAGE: us-east1-docker.pkg.dev/bionic-feat-490600-e3/lastwar-ocr/lastwar-ocr-service
+  RUNTIME_SA: lastwar-ocr-runtime@bionic-feat-490600-e3.iam.gserviceaccount.com
+  DEPLOYER_SA: lastwar-ocr-deployer@bionic-feat-490600-e3.iam.gserviceaccount.com
+  # The service's URL, the audience of the smoke test's ID token. Cloud Run
+  # accepts it on the candidate revision's tag URL too.
+  SERVICE_URL: https://lastwar-ocr-service-5gzdfypzja-ue.a.run.app
+  # Trusts this repository's id and refs/tags/v* only (docs/GCP_PERMISSIONS.md).
+  WIF_PROVIDER: projects/907669677549/locations/global/workloadIdentityPools/github/providers/lastwar-ocr-service
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 jobs:
-  build-cloud:
-    name: Build cloud image (:latest)
+  edge:
+    name: Publish :edge
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
     permissions:
       contents: read
       packages: write
+    strategy:
+      matrix:
+        include:
+          - {dockerfile: Dockerfile,       tag: edge,       scope: cloud}
+          - {dockerfile: Dockerfile.local, tag: edge-local, scope: local}
     steps:
-      - name: Checkout repository (with submodules)
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
-          # Pull the screen_definitions submodule so the Cloud Vision
-          # build bundles the same YAML pinned at the parent commit.
           submodules: recursive
-
-      - name: Log in to the Container registry
-        uses: docker/login-action@v3
+      - uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.tag }}
+          build-args: |
+            APP_VERSION=edge
+            APP_COMMIT=${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.scope }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.scope }}
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+  publish:
+    name: Publish
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      # The tagged commit's check runs, asserted below.
+      checks: read
+      # Workload Identity Federation, to push to Artifact Registry.
+      id-token: write
+    outputs:
+      digest: ${{ steps.cloud.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          # origin/main must be resolvable while sitting on a tag ref.
+          fetch-depth: 0
 
-      - name: Build and push :latest (Cloud Vision)
+      # Nothing is pushed until the tag has proved it is a release: a vX.Y.Z
+      # tag on a commit of main whose own Tests and Docker Build succeeded.
+      # A failure here leaves a tag with no image; delete the tag, fix, re-tag.
+      - name: Release check
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 - <<'EOF'
+          import json, os, re, subprocess, sys, urllib.request
+
+          TAG, SHA = os.environ['RELEASE_TAG'], os.environ['GITHUB_SHA']
+          REQUIRED_CHECKS = ['Tests', 'Docker Build']
+
+          def fail(msg):
+              print(f'Release check FAILED: {msg}\nSee docs/RELEASING.md.')
+              sys.exit(1)
+
+          if not re.fullmatch(r'v\d+\.\d+\.\d+', TAG):
+              fail(f'{TAG} is not a vX.Y.Z tag.')
+
+          main = subprocess.run(['git', 'rev-parse', '--verify', 'origin/main'],
+                                capture_output=True, text=True)
+          if main.returncode != 0:
+              fail('origin/main is not resolvable; the checkout needs fetch-depth: 0.')
+          if subprocess.run(['git', 'merge-base', '--is-ancestor', SHA,
+                             main.stdout.strip()]).returncode != 0:
+              fail(f'the tagged commit {SHA[:7]} is not on main.')
+
+          req = urllib.request.Request(
+              f"{os.environ['GITHUB_API_URL']}/repos/{os.environ['GITHUB_REPOSITORY']}"
+              f"/commits/{SHA}/check-runs?per_page=100",
+              headers={'Authorization': f"Bearer {os.environ['GH_TOKEN']}",
+                       'Accept': 'application/vnd.github+json'})
+          with urllib.request.urlopen(req, timeout=30) as resp:
+              runs = json.load(resp)['check_runs']
+          missing = [name for name in REQUIRED_CHECKS
+                     if not any(r['name'] == name and r['conclusion'] == 'success' for r in runs)]
+          if missing:
+              fail(f'{SHA[:7]} has no successful run of: {", ".join(missing)}. '
+                   'Wait for the checks on that commit to go green, then re-tag.')
+
+          # The release notes come from CHANGELOG.md; refuse a tag without them
+          # before anything is published, not in the last job.
+          if f'## [{TAG}]' not in open('CHANGELOG.md', encoding='utf-8').read():
+              fail(f'CHANGELOG.md has no "## [{TAG}]" section.')
+          print(f'{TAG} at {SHA[:7]}: on main, checks green, changelog present.')
+          EOF
+
+      # Authenticate before pushing anything, so a federation failure
+      # publishes nothing and the tag can simply be deleted and re-pushed.
+      - id: gcp
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.DEPLOYER_SA }}
+          token_format: access_token
+      - uses: docker/login-action@v3
+        with:
+          registry: us-east1-docker.pkg.dev
+          username: oauth2accesstoken
+          password: ${{ steps.gcp.outputs.access_token }}
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@v3
+
+      # One build, two registries: GHCR is the public distribution, Artifact
+      # Registry is what Cloud Run pulls (same region, so pulls are free).
+      # Version tags only; the floating tags move in Promote.
+      - id: cloud
+        name: Build and push the cloud image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile
           push: true
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
-          # GitHub Actions cache so Cloud-Vision rebuilds reuse the
-          # pip-install layer when only application code changes.
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
+            ${{ env.AR_IMAGE }}:${{ github.ref_name }}
+          build-args: |
+            APP_VERSION=${{ github.ref_name }}
+            APP_COMMIT=${{ github.sha }}
           cache-from: type=gha,scope=cloud
-          cache-to: type=gha,mode=max,scope=cloud
 
-  build-local:
-    name: Build local image (:local)
-    runs-on: ubuntu-latest
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - name: Checkout repository (with submodules)
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Log in to the Container registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build and push :local (PaddleOCR)
+      - name: Build and push the local image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile.local
           push: true
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:local
-          # PaddleOCR + paddlepaddle pip install is multi-GB and slow;
-          # cache aggressively so subsequent builds only re-run when
-          # requirements-local.txt or Dockerfile.local change.
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}-local
+          build-args: |
+            APP_VERSION=${{ github.ref_name }}
+            APP_COMMIT=${{ github.sha }}
           cache-from: type=gha,scope=local
-          cache-to: type=gha,mode=max,scope=local
+
+  deploy:
+    name: Deploy
+    needs: publish
+    runs-on: ubuntu-latest
+    # Limited to v* tags in the repository settings; the federation provider
+    # trusts nothing else either.
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.DEPLOYER_SA }}
+      - uses: google-github-actions/setup-gcloud@v2
+
+      # A revision on the released digest that serves nothing yet. --tag
+      # gives it its own URL for the smoke test below.
+      - name: Deploy a no-traffic revision
+        run: |
+          gcloud run deploy "$SERVICE" \
+            --project "$PROJECT_ID" --region "$REGION" \
+            --image "$AR_IMAGE@${{ needs.publish.outputs.digest }}" \
+            --service-account "$RUNTIME_SA" \
+            --no-traffic --tag candidate \
+            --concurrency 1 --max-instances 3 \
+            --memory 1Gi --cpu 1 --timeout 120 \
+            --quiet
+
+      # An ID token for the deployer (run.invoker on the service).
+      - id: invoker
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.DEPLOYER_SA }}
+          token_format: id_token
+          id_token_audience: ${{ env.SERVICE_URL }}
+          id_token_include_email: true
+          create_credentials_file: false
+
+      # The new revision must report this tag, and must read one frame end to
+      # end — which is also the check that the runtime account can call Vision.
+      - name: Smoke-test the revision
+        env:
+          TOKEN: ${{ steps.invoker.outputs.id_token }}
+        run: |
+          set -euo pipefail
+          url=$(gcloud run services describe "$SERVICE" --project "$PROJECT_ID" --region "$REGION" --format=json \
+                  | python3 -c 'import json,sys; print(next(t["url"] for t in json.load(sys.stdin)["status"]["traffic"] if t.get("tag") == "candidate"))')
+          echo "candidate: $url"
+          health=$(curl -fsS -H "Authorization: Bearer $TOKEN" "$url/health")
+          echo "health: $health"
+          python3 -c 'import json,sys; h=json.loads(sys.argv[1]); assert h["version"]==sys.argv[2], h' "$health" "${{ github.ref_name }}"
+          curl -fsS -H "Authorization: Bearer $TOKEN" \
+               -F "images=@tests/fixtures/smoke/weekly_frame.png" -F category=weekly -F schema_version=1 \
+               "$url/process-batch" > batch.json
+          python3 - <<'EOF'
+          import json
+          body = json.load(open('batch.json'))
+          assert body.get('schema_version') == 1, body
+          assert body.get('results'), body
+          print('process-batch:', {k: len(v) for k, v in body['results'].items()})
+          EOF
+
+      - name: Move traffic to the new revision
+        run: |
+          gcloud run services update-traffic "$SERVICE" \
+            --project "$PROJECT_ID" --region "$REGION" --to-latest --quiet
+
+  promote:
+    name: Promote
+    needs: deploy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@v3
+
+      # Retag by manifest: no rebuild, the floating tags name the very bytes
+      # that were tested and deployed.
+      - name: Move the floating tags
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          image="$REGISTRY/$IMAGE_NAME"
+          minor="${TAG%.*}"
+          docker buildx imagetools create -t "$image:latest" -t "$image:$minor" "$image:$TAG"
+          docker buildx imagetools create -t "$image:local" -t "$image:$minor-local" "$image:$TAG-local"
+
+      - name: Create the GitHub Release
+        env:
+          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          awk -v tag="## [$TAG]" '
+            index($0, tag) == 1 {on = 1; next}
+            on && /^## \[/ {exit}
+            on {print}
+          ' CHANGELOG.md > notes.md
+          gh release create "$TAG" --title "$TAG" --notes-file notes.md --verify-tag
