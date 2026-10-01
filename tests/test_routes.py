@@ -28,7 +28,7 @@ import pytest
 from PIL import Image
 from werkzeug.datastructures import FileStorage
 
-from tests.conftest import FIXTURE_DIR, load_fixture
+from tests.conftest import FIXTURE_DIR, find_source_image, load_fixture, needs_colour, skip_missing_image
 
 
 # ---------------------------------------------------------------------------
@@ -661,11 +661,13 @@ class TestProcessBatchRealFixtures:
         mock_ann.text = "fixture"
         mock_ann.pages = []
 
-        # Use the real screenshot if available so colour-based classification
-        # works correctly. Fall back to a synthetic PNG if not found — in
-        # that case the text-scoring fallback inside classify_from_ocr_text
-        # takes over.
-        image_file = _real_image_or_synthetic(fixture_data.get("source_file", ""), fixture_name)
+        # Tab detection samples the screenshot's colours on most screens, so
+        # those need the real image and skip without it. The rest classify
+        # from text alone and run on a synthetic PNG when it is absent.
+        image_file = _real_image(
+            fixture_data.get("source_file", ""), fixture_name,
+            required=needs_colour(expected_category),
+        )
 
         with patch("app.routes.run_ocr", return_value=(mock_ann, fixture_data["image_hash"])):
             with patch("app.routes.extract_text_blocks", return_value=text_blocks):
@@ -684,41 +686,20 @@ class TestProcessBatchRealFixtures:
         assert len(data[expected_category]) > 0
 
 
-def _real_image_or_synthetic(source_file: str, fixture_name: str) -> FileStorage:
+def _real_image(source_file: str, fixture_name: str, *, required: bool) -> FileStorage:
     """
-    Returns a FileStorage wrapping the real screenshot if it can be found,
-    otherwise returns a synthetic PNG. The real image is needed so that
-    colour-based day tab classification works correctly in route tests.
+    Returns a FileStorage wrapping the real screenshot. When it is absent:
+    skips the test if `required`, else returns a synthetic PNG. The original
+    bytes go through the real pipeline (the stitcher crops letterboxed
+    frames), so no pre-cropping here.
     """
-    from pathlib import Path
-
-    search_dirs = [
-        Path("tests/fixtures/screenshots"),
-        Path.home() / "lastwar-screenshots",
-        Path.home() / "Pictures",
-        Path.home() / "Downloads",
-    ]
-
-    for directory in search_dirs:
-        if not directory.is_dir():
-            continue
-        for name in [source_file, f"{fixture_name}.png"]:
-            if not name:
-                continue
-            # Walk subdirectories — lastwar-screenshots is now organised by
-            # device/configuration (pixel_10_pro_xl/, pixel_fold_*/) rather
-            # than a flat layout.
-            candidates = [directory / name, *directory.rglob(name)]
-            for candidate in candidates:
-                if candidate.is_file():
-                    # Route tests pass the original bytes through the real
-                    # pipeline (stitcher crops letterboxed frames). No need
-                    # to pre-crop here — the stitcher will.
-                    return FileStorage(
-                        stream=io.BytesIO(candidate.read_bytes()),
-                        filename=name,
-                        content_type="image/png",
-                    )
-
-    # Real screenshot not found — fall back to synthetic
-    return png_file_storage(f"{fixture_name}.png")
+    path = find_source_image(source_file, f"{fixture_name}.png")
+    if path is None:
+        if required:
+            skip_missing_image(source_file or fixture_name)
+        return png_file_storage(f"{fixture_name}.png")
+    return FileStorage(
+        stream=io.BytesIO(path.read_bytes()),
+        filename=path.name,
+        content_type="image/png",
+    )

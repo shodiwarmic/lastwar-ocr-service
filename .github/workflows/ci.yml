@@ -1,0 +1,116 @@
+name: CI
+
+# Tests and Docker Build gate every merge to main (branch protection requires
+# both) and every release: docker-publish.yml refuses a tag whose commit has
+# not passed them.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: Tests
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+      # On main and on tags the private fixtures are mandatory and every
+      # recording must find its source image: a publish is never gated by
+      # the scrubbed public set or by a partial one.
+      STRICT: ${{ github.event_name == 'push' }}
+      HAS_FIXTURES_KEY: ${{ secrets.FIXTURES_DEPLOY_KEY != '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # Real member names live in the private fixtures repository, read
+      # through a read-only deploy key bound to it alone. Pull requests
+      # without the secret run the public set and skip the rest.
+      - name: Check out private fixtures
+        if: env.HAS_FIXTURES_KEY == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: shodiwarmic/lastwar-test-fixtures
+          ssh-key: ${{ secrets.FIXTURES_DEPLOY_KEY }}
+          path: .private-fixtures
+
+      - name: Require private fixtures on main and tags
+        if: env.STRICT == 'true' && env.HAS_FIXTURES_KEY != 'true'
+        run: |
+          echo "::error::FIXTURES_DEPLOY_KEY is not set; main and tags must test against the private fixtures"
+          exit 1
+
+      - name: Link source screenshots
+        if: env.HAS_FIXTURES_KEY == 'true'
+        run: |
+          rmdir tests/fixtures/screenshots 2>/dev/null || true
+          ln -s "$GITHUB_WORKSPACE/.private-fixtures/ocr-service/screenshots" tests/fixtures/screenshots
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - run: pip install -r requirements.txt pytest
+
+      - name: pytest
+        run: |
+          if [ "$STRICT" = "true" ]; then export REQUIRE_FIXTURE_IMAGES=1; fi
+          python -m pytest -q -p no:cacheprovider
+
+  docker-build:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build cloud image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: false
+          load: true
+          tags: ocr-ci:cloud
+          cache-from: type=gha,scope=cloud
+          cache-to: type=gha,mode=max,scope=cloud
+
+      - name: Build local image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.local
+          push: false
+          load: true
+          tags: ocr-ci:local
+          cache-from: type=gha,scope=local
+          cache-to: type=gha,mode=max,scope=local
+
+      # The tests run on 3.12 with requirements.txt; the local image is
+      # Python 3.10 with requirements-local.txt. Start both images and ask
+      # each for /health, so an import that only breaks there is caught.
+      - name: Start both images and check /health
+        run: |
+          set -e
+          for flavour in cloud local; do
+            docker run -d --name "ocr-$flavour" -p "0:8080" "ocr-ci:$flavour"
+            port=$(docker port "ocr-$flavour" 8080/tcp | head -1 | sed 's/.*://')
+            for _ in $(seq 1 60); do
+              if curl -fsS "http://127.0.0.1:$port/health" > "health-$flavour.json"; then break; fi
+              sleep 2
+            done
+            echo "$flavour: $(cat health-$flavour.json)"
+            grep -q '"status":"ok"' "health-$flavour.json" || { docker logs "ocr-$flavour"; exit 1; }
+          done

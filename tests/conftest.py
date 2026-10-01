@@ -23,6 +23,7 @@ tests that depend on them are automatically skipped via the
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -30,6 +31,76 @@ import pytest
 from app import create_app
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "ocr_responses"
+
+# Source screenshots behind the recordings. Not committed (they carry real
+# member names and weigh ~100 MB); a local copy goes here, any layout.
+SCREENSHOT_DIRS = [Path(__file__).parent / "fixtures" / "screenshots"]
+
+# Every skip for a missing source image carries this prefix, so CI can tell
+# "the image was absent" from any other skip.
+MISSING_IMAGE = "source image missing"
+
+
+def find_source_image(*names: str) -> Path | None:
+    """
+    Returns the path of the first of `names` found under SCREENSHOT_DIRS
+    (searched recursively), or None.
+    """
+    for directory in SCREENSHOT_DIRS:
+        if not directory.is_dir():
+            continue
+        for name in names:
+            if not name:
+                continue
+            direct = directory / name
+            if direct.is_file():
+                return direct
+            found = next((p for p in directory.rglob(name) if p.is_file()), None)
+            if found is not None:
+                return found
+    return None
+
+
+def find_screenshot_dir(name: str) -> Path | None:
+    """Returns the first directory called `name` under SCREENSHOT_DIRS, or None."""
+    for directory in SCREENSHOT_DIRS:
+        if not directory.is_dir():
+            continue
+        found = next((p for p in directory.rglob(name) if p.is_dir()), None)
+        if found is not None:
+            return found
+    return None
+
+
+def needs_colour(category: str | None) -> bool:
+    """
+    True for categories whose active tab is told apart by colour sampling
+    (the day pills, the Strength and Alliance Contribution tabs), so a
+    recording of one can only be verified against its screenshot. Only
+    Weekly Rank classifies from text alone.
+    """
+    from app.models.schemas import (
+        DAY_CATEGORIES,
+        SEASON_CONTRIBUTION_CATEGORIES,
+        STRENGTH_CATEGORIES,
+    )
+    return (
+        category in DAY_CATEGORIES
+        or category in STRENGTH_CATEGORIES
+        or category in SEASON_CONTRIBUTION_CATEGORIES
+    )
+
+
+def skip_missing_image(what: str):
+    """
+    Skips the current test because the source image it needs is absent —
+    or fails it when REQUIRE_FIXTURE_IMAGES is set, which CI does on main and
+    on tags so that a publish is never gated by a partial set of images.
+    """
+    message = f"{MISSING_IMAGE}: {what}"
+    if os.environ.get("REQUIRE_FIXTURE_IMAGES"):
+        pytest.fail(message + " (REQUIRE_FIXTURE_IMAGES is set)")
+    pytest.skip(message)
 
 
 # ---------------------------------------------------------------------------
