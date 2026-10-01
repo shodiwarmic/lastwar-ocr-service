@@ -46,12 +46,6 @@ jobs:
           echo "::error::FIXTURES_DEPLOY_KEY is not set; main and tags must test against the private fixtures"
           exit 1
 
-      - name: Link source screenshots
-        if: env.HAS_FIXTURES_KEY == 'true'
-        run: |
-          rmdir tests/fixtures/screenshots 2>/dev/null || true
-          ln -s "$GITHUB_WORKSPACE/.private-fixtures/ocr-service/screenshots" tests/fixtures/screenshots
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -61,6 +55,7 @@ jobs:
 
       - name: pytest
         run: |
+          if [ "$HAS_FIXTURES_KEY" = "true" ]; then export LASTWAR_FIXTURES="$GITHUB_WORKSPACE/.private-fixtures"; fi
           if [ "$STRICT" = "true" ]; then export REQUIRE_FIXTURE_IMAGES=1; fi
           python -m pytest -q -p no:cacheprovider
 

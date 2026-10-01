@@ -114,10 +114,10 @@ schema_version  optional — the contract version the caller will parse; absent 
 {
   "schema_version": 1,
   "results": {
-    "monday":           [{"player_name": "Charlie9042",      "score": 38686463}],
-    "friday":           [{"player_name": "SirBucksALot",     "score": 45635206}],
-    "power":            [{"player_name": "MOJO DUDE",        "score": 218478394}],
-    "donation_weekly":  [{"player_name": "CaptTrickster727", "score": 28300}]
+    "monday":           [{"player_name": "Victor9042",      "score": 38686463}],
+    "friday":           [{"player_name": "SirCoinsALot",     "score": 45635206}],
+    "power":            [{"player_name": "JAZZ CAT",        "score": 218478394}],
+    "donation_weekly":  [{"player_name": "CaptJuggler727", "score": 28300}]
   },
   "diagnostics": {
     "schema_version": 1,
@@ -217,7 +217,14 @@ python tools/capture_ocr_fixture.py /path/to/screenshot.png
 python tools/capture_ocr_fixture.py /path/to/screenshots/ --dry-run
 ```
 
-Fixtures are saved to `tests/fixtures/ocr_responses/`. The filename prefix is used to infer the expected output category — include the category in the screenshot filename before capturing:
+Recordings of real screens carry real player names, so they are **not committed here**. They
+live in the private repository `shodiwarmic/lastwar-test-fixtures` (`ocr-service/ocr_responses/`,
+with the source screenshots under `ocr-service/screenshots/`); capture into a clone of it with
+`--output`. This repository keeps a small public set, one recording per screen family, whose
+names were replaced by `tools/scrub_fixture.py` (`*-scrubbed.json`; review a scrubbed file by
+eye before committing it, and add it with `git add -f`).
+
+The tool writes `tests/fixtures/ocr_responses/` by default. The filename prefix is used to infer the expected output category — include the category in the screenshot filename before capturing:
 
 | Filename includes | Expected category |
 |---|---|
@@ -228,15 +235,24 @@ Fixtures are saved to `tests/fixtures/ocr_responses/`. The filename prefix is us
 | `Donation_Daily` | `donation_daily` |
 | `Donation_Weekly` | `donation_weekly` |
 
-The `.gitignore` excludes fixture files by default — remove that exclusion if you want them committed.
+The `.gitignore` excludes recordings so a real one is never committed by accident.
 
 ---
 
 ## Running Tests
 
+Tests that need a recording or a source screenshot skip when it is absent, with the reason
+`source image missing` for images. Most classification needs the screenshot (the active tab is
+told apart by colour), so without `LASTWAR_FIXTURES` those tests skip. CI runs with the private
+set, and on `main` and on tags sets `REQUIRE_FIXTURE_IMAGES=1`, which turns every missing-image
+skip into a failure.
+
 ```bash
-# Run all tests (fixture-dependent tests auto-skip if fixtures not captured yet)
+# Run all tests against the public, scrubbed recordings
 pytest
+
+# …and against the full private set and its screenshots, when you have access
+LASTWAR_FIXTURES=/path/to/lastwar-test-fixtures pytest
 
 # Run with verbose output
 pytest -v

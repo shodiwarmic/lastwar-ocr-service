@@ -13,9 +13,9 @@ Engine is selected at runtime by the `OCR_ENGINE` environment variable (`cloud_v
 ```json
 {
   "results": {
-    "friday":          [{"player_name": "ShodiWarmic",      "score": 161528090}],
-    "power":           [{"player_name": "SirBucksALot",     "score": 218478394}],
-    "donation_weekly": [{"player_name": "CaptTrickster727", "score": 28300}]
+    "friday":          [{"player_name": "KeldaVornic",      "score": 161528090}],
+    "power":           [{"player_name": "SirCoinsALot",     "score": 218478394}],
+    "donation_weekly": [{"player_name": "CaptJuggler727", "score": 28300}]
   },
   "diagnostics": { "schema_version": 1, "engine": "cloud_vision", "...": "see below" }
 }
@@ -117,6 +117,19 @@ app/
 ```
 
 ---
+
+## Tests and fixtures
+
+Recorded Cloud Vision responses ("recordings") of real screens carry real member names, so the
+full set and its source screenshots live in the **private** repository
+`shodiwarmic/lastwar-test-fixtures` (`ocr-service/ocr_responses/`, `ocr-service/screenshots/`).
+Point `LASTWAR_FIXTURES` at a clone of it; `tests/conftest.py` then searches it beside the
+public `tests/fixtures/ocr_responses/`, which holds only a scrubbed set (`*-scrubbed.json`, made
+by `tools/scrub_fixture.py`). Never commit an unscrubbed recording or a screenshot here.
+
+Run pytest in a `python:3.12` container with the submodule initialised. A test that needs a
+source image calls `skip_missing_image()` (reason `source image missing`);
+`REQUIRE_FIXTURE_IMAGES=1`, set by CI on main and tags, turns those skips into failures.
 
 ## Running locally
 

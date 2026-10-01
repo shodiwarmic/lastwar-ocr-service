@@ -27,7 +27,7 @@ from app.pipeline.classifier import (
     _ocr_detect_active_day_by_text as _ocr_detect_active_day,
 )
 from tests.conftest import (
-    FIXTURE_DIR,
+    discover_fixtures,
     find_source_image,
     get_text_blocks,
     load_fixture,
@@ -249,9 +249,7 @@ def _infer_category(fixture_name: str):
 
 
 def _discovered_fixtures():
-    """Return list of fixture stem names found on disk, or a placeholder if none."""
-    stems = sorted(p.stem for p in FIXTURE_DIR.glob("*.json"))
-    return stems if stems else ["__no_fixtures__"]
+    return discover_fixtures()
 
 
 class TestRealFixtures:

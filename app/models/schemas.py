@@ -243,7 +243,7 @@ class BatchResult:
 
     Usage:
         result = BatchResult()
-        result.add_entries("friday", [PlayerEntry(player_name="SirBucksALot", score=45635206)])
+        result.add_entries("friday", [PlayerEntry(player_name="SirCoinsALot", score=45635206)])
         response = result.to_response_dict()
     """
 
@@ -275,8 +275,8 @@ class BatchResult:
         Returns:
             Dict mapping category keys to lists of player dicts, e.g.:
             {
-                "friday": [{"player_name": "SirBucksALot", "score": 45635206}],
-                "power":  [{"player_name": "MOJO DUDE",    "score": 218478394}]
+                "friday": [{"player_name": "SirCoinsALot", "score": 45635206}],
+                "power":  [{"player_name": "JAZZ CAT",    "score": 218478394}]
             }
         """
         return {

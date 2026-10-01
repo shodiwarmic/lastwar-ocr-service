@@ -23,7 +23,7 @@ from app.pipeline.extractor import (
 )
 from app.models.schemas import ScoreCandidate
 from app.utils.text_utils import clean_player_name
-from tests.conftest import FIXTURE_DIR, get_text_blocks, load_fixture, make_block, skip_if_no_fixture
+from tests.conftest import discover_fixtures, get_text_blocks, load_fixture, make_block, skip_if_no_fixture
 
 
 # ---------------------------------------------------------------------------
@@ -35,7 +35,7 @@ class TestBuildRowsFromBlocks:
     def test_groups_same_y_into_one_row(self):
         blocks = [
             make_block("1",            60, 400),
-            make_block("SirBucksALot", 300, 402),   # within tolerance
+            make_block("SirCoinsALot", 300, 402),   # within tolerance
             make_block("45,635,206",   580, 400),
         ]
         rows = build_rows_from_blocks(blocks, image_height=2400)
@@ -44,9 +44,9 @@ class TestBuildRowsFromBlocks:
 
     def test_separates_distant_y_into_separate_rows(self):
         blocks = [
-            make_block("SirBucksALot", 300, 400),
+            make_block("SirCoinsALot", 300, 400),
             make_block("45,635,206",   580, 400),
-            make_block("Crazy Carol",  300, 500),   # >43px apart at 2400px height
+            make_block("Wild Wanda",  300, 500),   # >43px apart at 2400px height
             make_block("33,871,230",   580, 500),
         ]
         rows = build_rows_from_blocks(blocks, image_height=2400)
@@ -55,10 +55,10 @@ class TestBuildRowsFromBlocks:
     def test_row_sorted_left_to_right(self):
         blocks = [
             make_block("45,635,206",   580, 400),   # score first in input
-            make_block("SirBucksALot", 300, 400),   # name second
+            make_block("SirCoinsALot", 300, 400),   # name second
         ]
         rows = build_rows_from_blocks(blocks, image_height=2400)
-        assert rows[0][0]["text"] == "SirBucksALot"
+        assert rows[0][0]["text"] == "SirCoinsALot"
         assert rows[0][1]["text"] == "45,635,206"
 
     def test_empty_input_returns_empty(self):
@@ -67,7 +67,7 @@ class TestBuildRowsFromBlocks:
     def test_score_anchored_clustering(self):
         """Score-anchored approach groups name tokens above the score."""
         blocks = [
-            make_block("SirBucksALot", 300, 400),   # name — above score
+            make_block("SirCoinsALot", 300, 400),   # name — above score
             make_block("45,635,206",   580, 430),   # score — 30px below name
             make_block("Pantheon",     300, 460),   # alliance — 30px below score
         ]
@@ -76,7 +76,7 @@ class TestBuildRowsFromBlocks:
         assert len(rows) == 1
         # Row should contain name + score but NOT alliance (below score)
         texts = [b["text"] for b in rows[0]]
-        assert "SirBucksALot" in texts
+        assert "SirCoinsALot" in texts
         assert "45,635,206" in texts
         assert "Pantheon" not in texts
 
@@ -91,12 +91,12 @@ class TestParsePlayerRow:
         result = parse_player_row(player_row_blocks)
         assert result is not None
         raw_name, raw_score = result
-        assert "SirBucksALot" in raw_name
+        assert "SirCoinsALot" in raw_name
         assert raw_score == "45,635,206"
 
     def test_returns_none_for_row_without_score(self):
         blocks = [
-            make_block("SirBucksALot", 300, 400),
+            make_block("SirCoinsALot", 300, 400),
             make_block("[PoWr]",        160, 400),
         ]
         assert parse_player_row(blocks) is None
@@ -124,7 +124,7 @@ class TestParsePlayerRow:
         """
         blocks = [
             make_block("[PoWr]",           60, 400),
-            make_block("SirBucksALot",    200, 400),
+            make_block("SirCoinsALot",    200, 400),
             make_block("45,635,206",       500, 400),
             # These appear to the right of the score — should be excluded
             make_block("Pantheon",         620, 400),
@@ -136,7 +136,7 @@ class TestParsePlayerRow:
         raw_name, raw_score = result
         assert "Pantheon" not in raw_name
         assert "Wrath" not in raw_name
-        assert "SirBucksALot" in raw_name
+        assert "SirCoinsALot" in raw_name
 
 
 # ---------------------------------------------------------------------------
@@ -146,22 +146,22 @@ class TestParsePlayerRow:
 class TestCleanPlayerName:
 
     def test_strips_alliance_tag(self):
-        assert clean_player_name("[PoWr] SirBucksALot") == "SirBucksALot"
+        assert clean_player_name("[PoWr] SirCoinsALot") == "SirCoinsALot"
 
     def test_strips_leading_rank_number(self):
-        assert clean_player_name("48 ShodiWarmic") == "ShodiWarmic"
+        assert clean_player_name("48 KeldaVornic") == "KeldaVornic"
 
     def test_strips_r_badge(self):
-        assert clean_player_name("R4 ShodiWarmic") == "ShodiWarmic"
+        assert clean_player_name("R4 KeldaVornic") == "KeldaVornic"
 
     def test_handles_combined_noise(self):
-        assert clean_player_name("48 R4 [PoWr] ShodiWarmic") == "ShodiWarmic"
+        assert clean_player_name("48 R4 [PoWr] KeldaVornic") == "KeldaVornic"
 
     def test_preserves_numbers_in_names(self):
-        assert clean_player_name("Charlie9042") == "Charlie9042"
+        assert clean_player_name("Victor9042") == "Victor9042"
 
     def test_preserves_spaces_in_names(self):
-        assert clean_player_name("[PoWr] gabriel garage") == "gabriel garage"
+        assert clean_player_name("[PoWr] marcel market") == "marcel market"
 
     def test_handles_tag_without_space(self):
         # "[PoWr]Pantheon" — bracket tag stripped, display name also stripped
@@ -170,34 +170,34 @@ class TestCleanPlayerName:
 
     def test_strips_alliance_display_name(self):
         # Alliance display name appears as plain text after the bracket tag is stripped
-        assert clean_player_name("[PoWr] SirBucksALot Pantheon of Wrath") == "SirBucksALot"
+        assert clean_player_name("[PoWr] SirCoinsALot Pantheon of Wrath") == "SirCoinsALot"
 
     def test_strips_alliance_display_name_case_insensitive(self):
-        assert clean_player_name("SirBucksALot pantheon of wrath") == "SirBucksALot"
+        assert clean_player_name("SirCoinsALot pantheon of wrath") == "SirCoinsALot"
 
     def test_strips_thai_characters(self):
         # Thai OCR noise from rank badge icons on Strength Ranking screen
-        result = clean_player_name("รๆ3 ShodiWarmic")
-        assert "ShodiWarmic" in result
+        result = clean_player_name("รๆ3 KeldaVornic")
+        assert "KeldaVornic" in result
         assert "ร" not in result
 
     def test_preserves_accented_characters(self):
-        # Accented names like Pàcha must survive cleaning
-        assert clean_player_name("Pàcha") == "Pàcha"
+        # Accented names like Rèvo must survive cleaning
+        assert clean_player_name("Rèvo") == "Rèvo"
 
     def test_full_noisy_row(self):
         # Simulate a full raw string as it arrives from OCR in the real pipeline
-        result = clean_player_name("1 R4 [PoWr] SirBucksALot Pantheon of Wrath")
-        assert result == "SirBucksALot"
+        result = clean_player_name("1 R4 [PoWr] SirCoinsALot Pantheon of Wrath")
+        assert result == "SirCoinsALot"
 
     def test_strips_bare_tag_without_brackets(self):
         # OCR sometimes returns PoWr without brackets as a standalone token
-        assert clean_player_name("PoWr SirBucksALot") == "SirBucksALot"
+        assert clean_player_name("PoWr SirCoinsALot") == "SirCoinsALot"
 
     def test_strips_bare_tag_combined_with_suffix(self):
         # Full production scenario: bracket stripped leaving bare tag + suffix
-        result = clean_player_name("PoWr SirBucksALot Pantheon of Wrath")
-        assert result == "SirBucksALot"
+        result = clean_player_name("PoWr SirCoinsALot Pantheon of Wrath")
+        assert result == "SirCoinsALot"
 
 
 # ---------------------------------------------------------------------------
@@ -207,20 +207,20 @@ class TestCleanPlayerName:
 class TestIsValidPlayerRow:
 
     def test_valid_row_passes(self):
-        assert is_valid_player_row("SirBucksALot", 45_635_206) is True
+        assert is_valid_player_row("SirCoinsALot", 45_635_206) is True
 
     def test_empty_name_fails(self):
         assert is_valid_player_row("", 45_635_206) is False
 
     def test_none_score_fails(self):
-        assert is_valid_player_row("SirBucksALot", None) is False
+        assert is_valid_player_row("SirCoinsALot", None) is False
 
     def test_zero_score_fails(self):
-        assert is_valid_player_row("SirBucksALot", 0) is False
+        assert is_valid_player_row("SirCoinsALot", 0) is False
 
     def test_score_below_minimum_fails(self):
         # Rank numbers (1-100) should be filtered
-        assert is_valid_player_row("SirBucksALot", 1) is False
+        assert is_valid_player_row("SirCoinsALot", 1) is False
 
     def test_ui_label_name_fails(self):
         assert is_valid_player_row("Commander", 45_635_206) is False
@@ -238,31 +238,31 @@ class TestExtractPlayersSynthetic:
         # Score-anchored: name must be ABOVE the score (lower Y value)
         # Alliance subtitle is BELOW the score and should be excluded
         blocks = [
-            # Row 1: SirBucksALot — name at Y=400, score at Y=430
-            make_block("SirBucksALot", 300, 400),
+            # Row 1: SirCoinsALot — name at Y=400, score at Y=430
+            make_block("SirCoinsALot", 300, 400),
             make_block("45,635,206",   580, 430),
-            # Row 2: Crazy Carol — name at Y=530, score at Y=560
-            make_block("Crazy",        270, 530),
-            make_block("Carol",        350, 530),
+            # Row 2: Wild Wanda — name at Y=530, score at Y=560
+            make_block("Wild",        270, 530),
+            make_block("Wanda",        350, 530),
             make_block("33,871,230",   580, 560),
         ]
         players = extract_players(blocks, screen_type="friday", image_height=2400)
         assert len(players) == 2
         names = [p.player_name for p in players]
-        assert "SirBucksALot" in names
-        assert "Crazy Carol" in names
+        assert "SirCoinsALot" in names
+        assert "Wild Wanda" in names
 
     def test_filters_ui_header_row(self):
         blocks = [
             make_block("Ranking",   80, 340),
             make_block("Commander", 300, 340),
             make_block("Points",    550, 340),
-            make_block("SirBucksALot", 300, 400),
+            make_block("SirCoinsALot", 300, 400),
             make_block("45,635,206",   580, 400),
         ]
         players = extract_players(blocks, screen_type="friday", image_height=2400)
         assert len(players) == 1
-        assert players[0].player_name == "SirBucksALot"
+        assert players[0].player_name == "SirCoinsALot"
 
     def test_returns_empty_for_no_valid_rows(self):
         blocks = [make_block("Ranking", 80, 340), make_block("Commander", 300, 340)]
@@ -271,7 +271,7 @@ class TestExtractPlayersSynthetic:
 
     def test_score_is_integer(self):
         blocks = [
-            make_block("SirBucksALot", 300, 400),
+            make_block("SirCoinsALot", 300, 400),
             make_block("45,635,206",   580, 400),
         ]
         players = extract_players(blocks, screen_type="friday", image_height=2400)
@@ -291,10 +291,10 @@ class TestIsScoreBlock:
 
     def test_crash_token_is_score_block(self):
         # Merged name+score must still anchor a row
-        assert _is_score_block(make_block("Ruthless54323,045,000", 400, 400)) is True
+        assert _is_score_block(make_block("Fearless54323,045,000", 400, 400)) is True
 
     def test_plain_name_is_not_score_block(self):
-        assert _is_score_block(make_block("ShodiWarmic", 300, 400)) is False
+        assert _is_score_block(make_block("KeldaVornic", 300, 400)) is False
 
     def test_small_number_filtered_by_min_score(self):
         assert _is_score_block(make_block("42", 60, 400)) is False
@@ -314,26 +314,26 @@ class TestParsePlayerRowCrash:
         """OCR merges name+score into one block — must still extract both."""
         blocks = [
             make_block("[PoWr]",                  80, 400),
-            make_block("Ruthless54323,045,000",  400, 400),
+            make_block("Fearless54323,045,000",  400, 400),
         ]
         result = parse_player_row(blocks, image_width=1080)
         assert result is not None
         raw_name, raw_score = result
-        assert "Ruthless5432" in raw_name
+        assert "Fearless5432" in raw_name
         assert raw_score == "3,045,000"
 
     def test_crash_with_multi_token_name(self):
         """Non-crash name tokens to the left of the crash block are included."""
         blocks = [
             make_block("[PoWr]",           80, 400),
-            make_block("Louie",           220, 400),
-            make_block("MW2,648,640",     450, 400),
+            make_block("Ronnie",           220, 400),
+            make_block("QX2,648,640",     450, 400),
         ]
         result = parse_player_row(blocks, image_width=1080)
         assert result is not None
         raw_name, raw_score = result
-        assert "Louie" in raw_name
-        assert "MW" in raw_name
+        assert "Ronnie" in raw_name
+        assert "QX" in raw_name
         assert raw_score == "2,648,640"
 
     def test_crash_returns_none_without_score(self):
@@ -359,26 +359,26 @@ class TestExtractPlayersCrash:
         Simulates the Mutual Assistance weekly screenshot where rank 2 and 4
         have digit-ending names that crash into their scores.
 
-        Rank 1: Sheffie      3,779,860  (clean)
-        Rank 2: Ruthless5432 3,045,000  (crash: Ruthless54323,045,000)
-        Rank 3: Louie MW     2,648,640  (clean)
-        Rank 4: CheeseKillers2 2,622,000 (crash: CheeseKillers22,622,000)
+        Rank 1: Pollie      3,779,860  (clean)
+        Rank 2: Fearless5432 3,045,000  (crash: Fearless54323,045,000)
+        Rank 3: Ronnie QX     2,648,640  (clean)
+        Rank 4: BreadEaters2 2,622,000 (crash: BreadEaters22,622,000)
         """
         return [
             make_block("[PoWr]",                    80,  200),
-            make_block("Sheffie",                  300,  200),
+            make_block("Pollie",                  300,  200),
             make_block("3,779,860",                700,  200),
 
             make_block("[PoWr]",                    80,  350),
-            make_block("Ruthless54323,045,000",    400,  350),
+            make_block("Fearless54323,045,000",    400,  350),
 
             make_block("[PoWr]",                    80,  500),
-            make_block("Louie",                    280,  500),
-            make_block("MW",                       340,  500),
+            make_block("Ronnie",                    280,  500),
+            make_block("QX",                       340,  500),
             make_block("2,648,640",                700,  500),
 
             make_block("[PoWr]",                    80,  650),
-            make_block("CheeseKillers22,622,000",  400,  650),
+            make_block("BreadEaters22,622,000",  400,  650),
         ]
 
     # -- candidates field --
@@ -390,8 +390,8 @@ class TestExtractPlayersCrash:
             image_height=2400,
         )
         names = {p.player_name: p for p in players}
-        assert "Ruthless5432" in names
-        entry = names["Ruthless5432"]
+        assert "Fearless5432" in names
+        entry = names["Fearless5432"]
         assert entry.candidates is not None
         assert len(entry.candidates) >= 2
 
@@ -401,7 +401,7 @@ class TestExtractPlayersCrash:
             screen_type="mutual_assistance_weekly",
             image_height=2400,
         )
-        entry = next(p for p in players if p.player_name == "Ruthless5432")
+        entry = next(p for p in players if p.player_name == "Fearless5432")
         for c in entry.candidates:
             assert isinstance(c, ScoreCandidate)
             assert c.player_name
@@ -413,7 +413,7 @@ class TestExtractPlayersCrash:
             screen_type="mutual_assistance_weekly",
             image_height=2400,
         )
-        entry = next(p for p in players if p.player_name == "Ruthless5432")
+        entry = next(p for p in players if p.player_name == "Fearless5432")
         scores = [c.score for c in entry.candidates]
         assert scores == sorted(scores)
 
@@ -423,7 +423,7 @@ class TestExtractPlayersCrash:
             screen_type="mutual_assistance_weekly",
             image_height=2400,
         )
-        entry = next(p for p in players if p.player_name == "Ruthless5432")
+        entry = next(p for p in players if p.player_name == "Fearless5432")
         assert entry.candidates[0].player_name == entry.player_name
         assert entry.candidates[0].score       == entry.score
 
@@ -433,7 +433,7 @@ class TestExtractPlayersCrash:
             screen_type="mutual_assistance_weekly",
             image_height=2400,
         )
-        sheffie = next(p for p in players if p.player_name == "Sheffie")
+        sheffie = next(p for p in players if p.player_name == "Pollie")
         assert sheffie.candidates is None
 
     def test_all_four_players_extracted(self):
@@ -444,7 +444,7 @@ class TestExtractPlayersCrash:
         )
         assert len(players) == 4
         names = {p.player_name for p in players}
-        assert names == {"Sheffie", "Ruthless5432", "Louie MW", "CheeseKillers2"}
+        assert names == {"Pollie", "Fearless5432", "Ronnie QX", "BreadEaters2"}
 
     # -- bounds-based correction --
 
@@ -486,7 +486,7 @@ class TestExtractPlayersCrash:
             screen_type="mutual_assistance_weekly",
             image_height=2400,
         )
-        sheffie = next(p for p in players if p.player_name == "Sheffie")
+        sheffie = next(p for p in players if p.player_name == "Pollie")
         d = sheffie.model_dump(exclude_none=True)
         assert "candidates" not in d
 
@@ -496,11 +496,11 @@ class TestExtractPlayersCrash:
             screen_type="mutual_assistance_weekly",
             image_height=2400,
         )
-        entry = next(p for p in players if p.player_name == "Ruthless5432")
+        entry = next(p for p in players if p.player_name == "Fearless5432")
         d = entry.model_dump(exclude_none=True)
         assert "candidates" in d
         assert isinstance(d["candidates"], list)
-        assert d["candidates"][0] == {"player_name": "Ruthless5432", "score": 3_045_000}
+        assert d["candidates"][0] == {"player_name": "Fearless5432", "score": 3_045_000}
 
 
 # ---------------------------------------------------------------------------
@@ -517,13 +517,13 @@ class TestExtractKills:
         players = extract_players(kills_ranking_blocks, screen_type="kills", image_height=1000)
         names = [p.player_name for p in players]
         scores = {p.player_name: p.score for p in players}
-        assert "Charlie9042" in names
-        assert scores["Charlie9042"] == 17_886_167
+        assert "Victor9042" in names
+        assert scores["Victor9042"] == 17_886_167
 
     def test_multi_token_name_joined(self, kills_ranking_blocks):
         players = extract_players(kills_ranking_blocks, screen_type="kills", image_height=1000)
         names = [p.player_name for p in players]
-        assert "Cloud FF7" in names
+        assert "Storm FF7" in names
 
     def test_r_badge_stripped(self, kills_ranking_blocks):
         players = extract_players(kills_ranking_blocks, screen_type="kills", image_height=1000)
@@ -551,16 +551,16 @@ class TestExtractDonationDaily:
     def test_top_player_correct(self, donation_daily_blocks):
         players = extract_players(donation_daily_blocks, screen_type="donation_daily", image_height=1000)
         scores = {p.player_name: p.score for p in players}
-        assert "BlackIce2" in scores
-        assert scores["BlackIce2"] == 14_800
+        assert "GreyFox2" in scores
+        assert scores["GreyFox2"] == 14_800
 
     def test_multi_token_names_joined(self, donation_daily_blocks):
         players = extract_players(donation_daily_blocks, screen_type="donation_daily", image_height=1000)
         names = [p.player_name for p in players]
-        assert "Cloud FF7" in names
-        assert "Crazy Carol" in names
-        assert "Davilson Pirani" in names
-        assert "Doc Hollagoon" in names
+        assert "Storm FF7" in names
+        assert "Wild Wanda" in names
+        assert "Orlando Mestre" in names
+        assert "Doc Marrowby" in names
 
     def test_scores_above_minimum(self, donation_daily_blocks):
         players = extract_players(donation_daily_blocks, screen_type="donation_daily", image_height=1000)
@@ -581,15 +581,15 @@ class TestExtractDonationWeekly:
     def test_top_player_correct(self, donation_weekly_blocks):
         players = extract_players(donation_weekly_blocks, screen_type="donation_weekly", image_height=1000)
         scores = {p.player_name: p.score for p in players}
-        assert "CaptTrickster727" in scores
-        assert scores["CaptTrickster727"] == 28_300
+        assert "CaptJuggler727" in scores
+        assert scores["CaptJuggler727"] == 28_300
 
     def test_multi_token_names_joined(self, donation_weekly_blocks):
         players = extract_players(donation_weekly_blocks, screen_type="donation_weekly", image_height=1000)
         names = [p.player_name for p in players]
-        assert "Crazy Carol" in names
-        assert "Davilson Pirani" in names
-        assert "Cloud FF7" in names
+        assert "Wild Wanda" in names
+        assert "Orlando Mestre" in names
+        assert "Storm FF7" in names
 
     def test_scores_above_minimum(self, donation_weekly_blocks):
         players = extract_players(donation_weekly_blocks, screen_type="donation_weekly", image_height=1000)
@@ -639,8 +639,7 @@ def _infer_category(fixture_name: str):
 
 
 def _discovered_fixtures():
-    stems = sorted(p.stem for p in FIXTURE_DIR.glob("*.json"))
-    return stems if stems else ["__no_fixtures__"]
+    return discover_fixtures()
 
 
 class TestExtractPlayersRealFixtures:
@@ -673,7 +672,7 @@ class TestExtractPlayersRealFixtures:
 
         assert len(players) > 0, (
             f"Fixture '{fixture_name}': expected at least one player, got none. "
-            f"Check the OCR output in tests/fixtures/ocr_responses/{fixture_name}.json"
+            f"Check the recording {fixture_name}.json"
         )
         for p in players:
             assert p.player_name.strip(), f"Empty player name in fixture '{fixture_name}'"
