@@ -4,7 +4,7 @@ Every release of the OCR service, newest first. The version describes the wire c
 (see [docs/RELEASING.md](docs/RELEASING.md)); each entry is written in the pull request that
 becomes the release, and the release notes are cut from it.
 
-## [v1.0.1] — unreleased
+## [v1.0.1] — 2026-10-18
 
 A patch: no contract change. The Donation screen read wrongly in two ways, both fixed.
 
