@@ -79,6 +79,15 @@ def classify_from_ocr_text(
     # 1. Strength Ranking — unique header text; colour-sample the active tab
     if _ocr_detect_strength(all_text_lower):
         tab = _detect_active_strength_tab(image, text_blocks) if image is not None else None
+        if tab is None and _ocr_matches_screen("strength_donation", all_text_lower):
+            # The Donation sub-tab row is open but its pill could not be told
+            # apart: unclassified, never Power — a Donation reading filed as
+            # Power lands in the power history.
+            logger.warning(
+                "Pass 2: Strength Donation detected but sub-tab resolution failed",
+                extra={"image_filename": filename},
+            )
+            return None, 0.0
         category = tab or "power"
         logger.debug(
             "Pass 2: Strength Ranking detected via OCR",
@@ -322,6 +331,9 @@ def _detect_active_tab_in_definition(
     ai  = defn.tabs.active_indicator
     pad = max(4, round(img_w * ai.bbox_padding_fraction))
 
+    if ai.strategy == "brightest":
+        return _detect_brightest_tab(image, text_blocks, defn.tabs.items, pad, ai)
+
     # Orange thresholds from active_indicator colour definition
     if ai.color and ai.color.hsv_override:
         o = ai.color.hsv_override
@@ -371,6 +383,64 @@ def _detect_active_tab_in_definition(
         return sub if sub else tabs_in_group[0].category
 
     return None
+
+
+def _detect_brightest_tab(
+    image: Image.Image,
+    text_blocks: list[dict],
+    items: list,
+    pad: int,
+    ai,
+) -> Optional[str]:
+    """
+    The `brightest` strategy for a single-row tab bar whose active tab is a
+    white pill (strength_donation's Daily | Weekly): the tab whose crop has
+    the largest share of near-white pixels wins, by at least `min_gap` over
+    the runner-up, and with at least `min_fraction` of its own.
+
+    Without it the Donation sub-tabs fell into the orange test above, which
+    a white pill never passes, so every Donation screen classified as Power.
+    Measured on the ten Donation recordings (three devices): the active pill
+    0.61–0.69, the inactive one 0.0.
+    """
+    img_w, img_h = image.size
+    candidates: list[tuple[str, float]] = []
+    for tab in items:
+        if not tab.signals:
+            continue
+        label = tab.signals[0].lower()
+        # The topmost block reading exactly the label is the tab bar's.
+        block = min(
+            (b for b in text_blocks if b["text"].strip().lower() == label),
+            key=lambda b: b["avg_y"],
+            default=None,
+        )
+        if block is None:
+            continue
+        left, top, right, bottom = _bbox_to_pixel_coords(block.get("bbox"))
+        if left is None:
+            continue
+        crop = image.crop((
+            max(0,     left  - pad),
+            max(0,     top   - pad),
+            min(img_w, right + pad),
+            min(img_h, bottom + pad),
+        ))
+        candidates.append((tab.category, _white_pixel_fraction(crop)))
+
+    if not candidates:
+        return None
+    candidates.sort(key=lambda c: -c[1])
+    best, best_fraction = candidates[0]
+    runner_up = candidates[1][1] if len(candidates) > 1 else 0.0
+    if best_fraction < ai.min_fraction or best_fraction - runner_up < ai.min_gap:
+        logger.debug(
+            "Brightest tab inconclusive",
+            extra={"best": best, "fraction": round(best_fraction, 3),
+                   "gap": round(best_fraction - runner_up, 3)},
+        )
+        return None
+    return best
 
 
 def _detect_active_subtab(
@@ -548,21 +618,23 @@ def _ocr_detect_strength(all_text_lower: set[str]) -> bool:
     - Match if any page_signal's words all appear in the token set.
     - Reject if any negative_signal's words all appear in the token set.
     """
-    for screen_id in _STRENGTH_SCREEN_IDS:
-        defn = get_definition(screen_id)
-        if defn is None:
-            continue
-        if any(
-            all(w in all_text_lower for w in neg.lower().split())
-            for neg in defn.negative_signals
-        ):
-            continue
-        if any(
-            all(w in all_text_lower for w in sig.lower().split())
-            for sig in defn.page_signals
-        ):
-            return True
-    return False
+    return any(_ocr_matches_screen(screen_id, all_text_lower) for screen_id in _STRENGTH_SCREEN_IDS)
+
+
+def _ocr_matches_screen(screen_id: str, all_text_lower: set[str]) -> bool:
+    """One definition's page_signals / negative_signals test (see above)."""
+    defn = get_definition(screen_id)
+    if defn is None:
+        return False
+    if any(
+        all(w in all_text_lower for w in neg.lower().split())
+        for neg in defn.negative_signals
+    ):
+        return False
+    return any(
+        all(w in all_text_lower for w in sig.lower().split())
+        for sig in defn.page_signals
+    )
 
 
 def _ocr_detect_weekly(all_text_lower: set[str]) -> bool:

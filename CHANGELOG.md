@@ -4,6 +4,24 @@ Every release of the OCR service, newest first. The version describes the wire c
 (see [docs/RELEASING.md](docs/RELEASING.md)); each entry is written in the pull request that
 becomes the release, and the release notes are cut from it.
 
+## [v1.0.1] — 2026-10-18
+
+A patch: no contract change. The Donation screen read wrongly in two ways, both fixed.
+
+### Fixed
+
+- **Every Donation screen was classified as Power**, so a Donation upload landed in the
+  power history. The Daily | Weekly pill is white, and the Strength tab detection only ever
+  tested for orange; the definition's `brightest` strategy is now honoured, and a Donation
+  screen whose pill cannot be told apart is unclassified rather than Power. Ten Donation
+  recordings in the private fixtures had been filed and snapshotted as Power on the strength
+  of it; they are relabelled.
+- **Donation rows were dropped or misnamed.** On those ten recordings (three Pixel Fold
+  layouts) 25 of 60 rows were lost and 14 names cut short, because a name sits lower beside
+  its score on this screen than on the others. `strength_donation.yaml` v4 widens the row's
+  band below the score, and lowers `min_score` to 101 so a member below 1,000 points reads
+  (the rank gutter, 1-100, stays out). A member on 0-100 points still does not read.
+
 ## [v1.0.0] — 2026-10-01
 
 The first versioned release. Every earlier image was unversioned: GHCR's `:latest` and

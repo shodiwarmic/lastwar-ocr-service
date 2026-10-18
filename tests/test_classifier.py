@@ -191,6 +191,46 @@ class TestClassifyFromOcrText:
 
 
 # ---------------------------------------------------------------------------
+# Strength Donation — the Daily | Weekly pill (`brightest`)
+# ---------------------------------------------------------------------------
+
+def _donation_image(daily_white: bool, weekly_white: bool):
+    """A 600×1000 frame matching donation_*_blocks: Donation's row-1 tab
+    orange, each sub-tab pill white (active) or warm grey (inactive)."""
+    from PIL import Image, ImageDraw
+    img = Image.new("RGB", (600, 1000), (60, 64, 75))
+    draw = ImageDraw.Draw(img)
+    draw.rectangle((460, 175, 520, 225), fill=(205, 140, 65))
+    for x, white in ((150, daily_white), (350, weekly_white)):
+        draw.rectangle((x - 30, 225, x + 30, 275),
+                       fill=(250, 250, 250) if white else (150, 141, 141))
+    return img
+
+
+class TestDonationSubTab:
+    """Every Donation screen classified as Power until v1.0.1: the sub-tab
+    pills are white, and the orange test never passes one."""
+
+    def test_daily_pill(self, donation_daily_blocks):
+        image = _donation_image(daily_white=True, weekly_white=False)
+        assert classify_from_ocr_text(donation_daily_blocks, image=image)[0] == "donation_daily"
+
+    def test_weekly_pill(self, donation_weekly_blocks):
+        image = _donation_image(daily_white=False, weekly_white=True)
+        assert classify_from_ocr_text(donation_weekly_blocks, image=image)[0] == "donation_weekly"
+
+    def test_undecided_pill_is_unclassified_not_power(self, donation_daily_blocks):
+        image = _donation_image(daily_white=True, weekly_white=True)
+        assert classify_from_ocr_text(donation_daily_blocks, image=image) == (None, 0.0)
+
+    def test_power_screen_unchanged(self, strength_metrics_blocks):
+        from PIL import Image
+        assert classify_from_ocr_text(
+            strength_metrics_blocks, image=Image.new("RGB", (600, 1000), (60, 64, 75))
+        )[0] == "power"
+
+
+# ---------------------------------------------------------------------------
 # Real fixture tests — auto-discovered from tests/fixtures/ocr_responses/
 # ---------------------------------------------------------------------------
 
