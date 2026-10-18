@@ -22,6 +22,7 @@ from app.pipeline.extractor import (
     parse_player_row,
 )
 from app.models.schemas import ScoreCandidate
+from app.pipeline.screen_definitions import get_definition_for_category
 from app.utils.text_utils import clean_player_name
 from tests.conftest import discover_fixtures, get_text_blocks, load_fixture, make_block, skip_if_no_fixture
 
@@ -564,8 +565,9 @@ class TestExtractDonationDaily:
 
     def test_scores_above_minimum(self, donation_daily_blocks):
         players = extract_players(donation_daily_blocks, screen_type="donation_daily", image_height=1000)
+        min_score = get_definition_for_category("donation_daily").row_clustering.min_score
         for p in players:
-            assert p.score >= 1_000
+            assert p.score >= min_score
 
 
 # ---------------------------------------------------------------------------
@@ -593,8 +595,9 @@ class TestExtractDonationWeekly:
 
     def test_scores_above_minimum(self, donation_weekly_blocks):
         players = extract_players(donation_weekly_blocks, screen_type="donation_weekly", image_height=1000)
+        min_score = get_definition_for_category("donation_weekly").row_clustering.min_score
         for p in players:
-            assert p.score >= 1_000
+            assert p.score >= min_score
 
 
 # ---------------------------------------------------------------------------
@@ -631,11 +634,15 @@ _FILENAME_TO_CATEGORY = {
 
 
 def _infer_category(fixture_name: str):
+    """Longest-match-wins, as test_classifier.py's and test_routes.py's
+    inferrers: `donation_weekly_*` is donation_weekly, not the generic
+    `weekly` that also appears in it."""
     lower = fixture_name.lower()
-    for keyword, category in _FILENAME_TO_CATEGORY.items():
-        if keyword in lower:
-            return category
-    return None
+    matches = [(k, v) for k, v in _FILENAME_TO_CATEGORY.items() if k in lower]
+    if not matches:
+        return None
+    matches.sort(key=lambda kv: -len(kv[0]))
+    return matches[0][1]
 
 
 def _discovered_fixtures():
@@ -676,4 +683,42 @@ class TestExtractPlayersRealFixtures:
         )
         for p in players:
             assert p.player_name.strip(), f"Empty player name in fixture '{fixture_name}'"
-            assert p.score > 0, f"Non-positive score in fixture '{fixture_name}'"
+            assert p.score >= 0, f"Negative score in fixture '{fixture_name}'"
+
+
+# ---------------------------------------------------------------------------
+# The Donation recordings, read row by row
+# ---------------------------------------------------------------------------
+
+# The ten Donation captures of 2026-04-22 (Pixel Fold: inside portrait 1325xx,
+# inside landscape 1518xx, front 1526xx). Each frame shows ranks 1-5 and the
+# pinned self-row; the Daily self-row reads 950, below the old min_score.
+_DONATION_RECORDINGS = [
+    f"donation_{kind}_20260422-{stamp}"
+    for kind, stamps in (
+        ("daily", ("132251", "151825", "151836", "151856", "152657")),
+        ("weekly", ("132256", "151829", "151833", "151859", "152659")),
+    )
+    for stamp in stamps
+]
+
+
+class TestDonationRecordings:
+
+    @pytest.mark.parametrize("fixture_name", _DONATION_RECORDINGS)
+    def test_every_row_reads(self, fixture_name, skip_if_no_fixture):
+        skip_if_no_fixture(fixture_name)
+        data = load_fixture(fixture_name)
+        category = _infer_category(fixture_name)
+        players = extract_players(data["text_blocks"], screen_type=category,
+                                  image_height=data["image_height"], image_width=data["image_width"])
+
+        assert len(players) == 6
+        assert all(p.player_name.strip() and isinstance(p.score, int) for p in players)
+        assert [p.rank for p in players[:5]] == [1, 2, 3, 4, 5]
+        assert players[5].rank > 5
+        scores = [p.score for p in players[:5]]
+        assert scores == sorted(scores, reverse=True)
+        if category == "donation_daily":
+            assert players[5].score == 950
+

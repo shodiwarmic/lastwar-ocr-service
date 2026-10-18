@@ -214,6 +214,64 @@
    ]
   ]
  },
+ "donation_daily_20260422-151825-scrubbed": {
+  "category": "donation_daily",
+  "rows": [
+   [
+    "Q3 GtmMunyljwq",
+    10050
+   ],
+   [
+    "Q3 Hxkczwo1",
+    8900
+   ],
+   [
+    "Q3 Xylzcow",
+    8850
+   ],
+   [
+    "Q3 RvmzjzZuvjnpa2",
+    8550
+   ],
+   [
+    "PAHNKLCH Q3 DwcEsaXcrszid",
+    7950
+   ],
+   [
+    "Q4 SuioiOdjeft",
+    950
+   ]
+  ]
+ },
+ "donation_weekly_20260422-151829-scrubbed": {
+  "category": "donation_weekly",
+  "rows": [
+   [
+    "Q3 GtmMunyljwq",
+    30750
+   ],
+   [
+    "Q3 GvtbjIbogl",
+    30250
+   ],
+   [
+    "Q3 Xylzcow",
+    29000
+   ],
+   [
+    "Q3 Hxkczwo1",
+    28900
+   ],
+   [
+    "Q3 VokAxbbjtoac",
+    28400
+   ],
+   [
+    "Q4 SuioiOdjeft",
+    14600
+   ]
+  ]
+ },
  "kills_20260422-132247-scrubbed": {
   "category": "kills",
   "rows": [
